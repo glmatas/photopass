@@ -486,14 +486,14 @@ function openLight() {
   readLight();
 }
 
-function openSoundListener() {
+function openSoundListener(code = '') {
   role = 'phone';
-  el('sound-pin').value = '';
+  el('sound-pin').value = code;
   el('sound-pin').disabled = false;
   el('sound-listen').disabled = false;
   el('sound-receive-progress').value = 0;
   el('sound-received').textContent = '';
-  el('sound-receive-status').textContent = 'On the kiosk, choose Use sound instead to see the six digits.';
+  el('sound-receive-status').textContent = code ? 'Kiosk code filled in. Tap Start listening.' : 'On the kiosk, choose Use sound instead to see the six digits.';
   show('sound-receive');
 }
 
@@ -510,6 +510,16 @@ async function runSound(sending) {
     address.hash = '';
     el('sound-address').href = address.href;
     el('sound-address').textContent = address.host + address.pathname + address.search;
+    const qrOption = el('sound-qr');
+    qrOption.open = false;
+    address.search = '?s';
+    address.hash = 'S' + code;
+    try {
+      drawCode(el('sound-join'), address.href);
+      qrOption.hidden = false;
+    } catch {
+      qrOption.hidden = true;
+    }
     // Approximate end-to-end rate observed in the software audio loopback.
     const minutes = Math.ceil(picked.size / (450 * 60));
     el('sound-time').textContent = minutes >= 2
@@ -552,7 +562,7 @@ async function runSound(sending) {
     // Resume in the user's click, before loading codecs; mobile browsers require this gesture.
     active.context = new Context();
     const resume = active.context.resume();
-    const [, transport] = await Promise.all([resume, import('./sound-transfer.js?v=4')]);
+    const [, transport] = await Promise.all([resume, import('./sound-transfer.js?v=5')]);
     if (sound !== active) return;
     const options = {
       code,
@@ -758,6 +768,9 @@ window.addEventListener('pagehide', cleanUp);
 document.addEventListener('visibilitychange', updateScreenLock);
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 function enterRoute() {
+  const soundLink = /^#S(\d{6})$/.exec(location.hash);
+  if (soundLink) return openSoundListener(soundLink[1]);
+  if (new URLSearchParams(location.search).has('s') && !location.hash) return openSoundListener();
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);

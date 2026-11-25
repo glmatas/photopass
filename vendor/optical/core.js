@@ -421,10 +421,12 @@ export {
   HEADER_LEN,
   LTDecoder,
   LTEncoder,
+  frameIndices,
   fnv1a,
   packFile,
   packFrame,
   parseFrame,
+  solitonCdf,
   streamIdentity,
   unpackFile,
   verifyFile

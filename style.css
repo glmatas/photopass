@@ -511,6 +511,9 @@ progress::-moz-progress-bar { border-radius: 8px; background: var(--green); }
 .sound-address { overflow-wrap: anywhere; font-size: clamp(16px, 1.5vw, 20px); }
 .sound-pickup { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; border-top: 1px solid var(--rule); margin-top: 23px; padding-top: 15px; }
 .sound-caption, .sound-input-group label { font-size: 14px; font-weight: 650; }
+#sound-qr { margin-top: 12px; }
+#sound-qr summary { color: var(--green); cursor: pointer; min-height: 44px; padding: 10px 0; }
+#sound-join { display: block; width: min(100%, 300px); height: auto; background: white; forced-color-adjust: none; }
 #sound-code, #sound-pin { font-family: ui-monospace, "Cascadia Mono", "Courier New", monospace; font-variant-numeric: tabular-nums; }
 #sound-code { font-size: clamp(40px, 6.2vw, 75px); line-height: 1.14; letter-spacing: .065em; }
 .sound-status-card { border: 1px solid var(--rule); border-radius: 10px; padding: clamp(18px, 2.4vw, 32px); background: #edf0e5; }

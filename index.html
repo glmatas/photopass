@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=4">
-  <script type="module" src="./app.js?v=4"></script>
+  <link rel="stylesheet" href="./style.css?v=5">
+  <script type="module" src="./app.js?v=5"></script>
 </head>
 <body>
   <header class="masthead">
@@ -126,6 +126,10 @@
           <span class="sound-caption" id="sound-code-label">Kiosk code</span>
           <output id="sound-code" aria-labelledby="sound-code-label"></output>
         </div>
+        <details id="sound-qr">
+          <summary>Scan instead of typing</summary>
+          <canvas id="sound-join" role="img" aria-label="Scan to open the sound receiver with the kiosk code filled in"></canvas>
+        </details>
       </div>
       <div class="sound-status-card">
         <h2>Kiosk speaker</h2>

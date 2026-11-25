@@ -1,7 +1,7 @@
 import { openSoundModem } from './sound-modem.js';
 import { PhotoPeer } from './peer.js';
 import { decodeCompact, encodeCompact } from './signal-codec.js';
-import { LTDecoder, LTEncoder, fnv1a, packFile, unpackFile } from './vendor/optical/core.js';
+import { LTDecoder, LTEncoder, fnv1a, frameIndices, packFile, solitonCdf, unpackFile } from './vendor/optical/core.js?v=5';
 
 const BEACON = 1, OFFER = 2, ANSWER = 3, DATA = 4, RECEIPT = 5, USE_SOUND = 6;
 const HEADER = 28, BLOCK_HEADER = 16, GROUP = 128;
@@ -104,6 +104,36 @@ function lifetime(opts) {
   };
 }
 
+// These ordinary Decimen sequences each select one distinct source block.
+// Sending them first lets every previously published receiver finish a clean
+// transfer in exactly k frames. Low sequence numbers remain available for repair.
+function scheduleForGroup(k, seed) {
+  const cdf = solitonCdf(k), singles = new Uint32Array(k);
+  let found = 0;
+  for (let n = 0; n < 131072 && found < k; n++) {
+    const seq = 0x80000000 + n, indices = frameIndices(k, cdf, seed, seq);
+    if (indices.length === 1 && !singles[indices[0]]) {
+      singles[indices[0]] = seq;
+      found++;
+    }
+  }
+  // Planning has a hard CPU ceiling; a missing entry is an ordinary fountain
+  // equation, and later repair sweeps work regardless of the initial plan.
+  for (let i = 0; i < k; i++) if (!singles[i]) singles[i] = 0x90000000 + i;
+  let cursor = 0;
+  function repair() {
+    // When most source blocks are already known, wider XOR equations have
+    // a better chance to cover a missing block. Tiny groups keep all degrees.
+    const minDegree = Math.min(5, 1 + Math.floor(k / 16));
+    for (let tries = 0; ; tries++) {
+      const seq = cursor;
+      cursor = (cursor + 1) % 0x80000000;
+      if (minDegree === 1 || tries === 63 || frameIndices(k, cdf, seed, seq).length >= minDegree) return seq;
+    }
+  }
+  return { singles, repair };
+}
+
 // Small independent fountain generations keep memory bounded and a 32 MiB
 // file fits the wire format even on a modem with a smaller maximum packet.
 function bulkSource(container, tag, code, mtu) {
@@ -111,14 +141,23 @@ function bulkSource(container, tag, code, mtu) {
   if (block < 64) throw new Error('The audio modem cannot carry photo packets.');
   const checksum = fnv1a(container), groups = Math.ceil(container.length / (block * GROUP));
   const seed = (tag[8] << 8) | tag[9];
+  const plans = new Map();
   let group = 0, pass = 0, index = 0, encoder;
   return () => {
     if (!encoder) {
       const start = group * block * GROUP;
       encoder = new LTEncoder(container.subarray(start, start + block * GROUP), block, seed ^ group);
+      if (!plans.has(group)) plans.set(group, scheduleForGroup(encoder.k, seed ^ group));
     }
-    const perPass = Math.ceil(encoder.k * 1.38) + 12;
-    const seq = (pass * perPass + index) >>> 0, data = new Uint8Array(BLOCK_HEADER + block), v = viewOf(data);
+    // Sweep the entire file before sending redundancy. Alternate fresh repair
+    // equations with rotated systematic sweeps so late joiners can also finish.
+    const systematic = pass % 2 === 0, cycle = Math.floor(pass / 2);
+    const perPass = systematic ? encoder.k : Math.ceil(encoder.k * 0.65) + 6;
+    const plan = plans.get(group);
+    const seq = systematic
+      ? plan.singles[(index + cycle * (13 + group)) % encoder.k]
+      : plan.repair();
+    const data = new Uint8Array(BLOCK_HEADER + block), v = viewOf(data);
     v.setUint32(0, container.length); v.setUint32(4, checksum); v.setUint16(8, block); v.setUint16(10, group); v.setUint32(12, seq);
     data.set(encoder.encode(seq), BLOCK_HEADER);
     if (++index >= perPass) { index = 0; encoder = undefined; if (++group >= groups) { group = 0; pass++; } }
