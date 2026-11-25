@@ -22,17 +22,31 @@
   <main class="workspace">
     <section class="screen start-screen" id="start-panel" aria-labelledby="start-title">
       <div class="start-copy">
-        <h1 id="start-title">Send a<br><em>photo.</em></h1>
-        <p class="intro">Choose a photo, then pair a phone to save the original.</p>
-        <div class="choose-file">
-          <label for="file-input" class="file-picker">
-            <span class="file-icon" aria-hidden="true"></span>
-            <span>Choose photo</span>
-            <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp">
-          </label>
-          <span id="file-label" class="file-meta">JPEG, PNG or WebP · Up to 32 MiB</span>
+        <div class="start-intro">
+          <h1 id="start-title">Take a<br><em>photo.</em></h1>
+          <p class="intro">Take your photo here, then pair your phone to save the original.</p>
         </div>
-        <button type="button" id="start-button" class="button primary arrow" disabled>Pair a phone</button>
+        <div class="capture-operations">
+          <div id="camera-picker" class="camera-picker" hidden>
+            <label for="camera-select">Camera</label>
+            <select id="camera-select"></select>
+          </div>
+          <div class="capture-buttons">
+            <button type="button" id="camera-button" class="button primary">Enable camera</button>
+            <button type="button" id="take-button" class="button primary" disabled>Take photo</button>
+            <button type="button" id="start-button" class="button primary arrow" disabled hidden>Pair a phone</button>
+            <button type="button" id="retake-button" class="button secondary" hidden>Retake photo</button>
+          </div>
+          <p id="capture-status" class="support-text" role="status" aria-live="polite"></p>
+          <div class="choose-file">
+            <label for="file-input" class="file-picker">
+              <span class="file-icon" aria-hidden="true"></span>
+              <span>Choose an existing photo</span>
+              <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp">
+            </label>
+            <span id="file-label" class="file-meta">JPEG, PNG or WebP · Up to 32 MiB</span>
+          </div>
+        </div>
       </div>
       <div class="photo-stage">
         <div class="stage-backdrop" aria-hidden="true"></div>
@@ -48,7 +62,8 @@
           </div>
           <span class="print-stripe"></span>
         </figure>
-        <img id="preview" class="image-preview" alt="Selected photo" hidden>
+        <video id="capture-video" class="image-preview" aria-label="Live kiosk camera preview" playsinline muted autoplay hidden></video>
+        <img id="preview" class="image-preview" alt="Your photo preview" hidden>
         <i class="crop tl" aria-hidden="true"></i><i class="crop tr" aria-hidden="true"></i>
         <i class="crop bl" aria-hidden="true"></i><i class="crop br" aria-hidden="true"></i>
       </div>

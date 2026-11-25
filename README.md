@@ -12,9 +12,9 @@ There is no build step. All JavaScript dependencies, including the QR reader, ar
 
 ## Collect a photo
 
-1. On the kiosk, choose the visitor’s JPEG, PNG or WebP and select **Pair a phone**. The limit is 32 MiB.
+1. On the kiosk, allow camera access. Select a camera if several are available. Select **Take photo**, review the picture, then select **Retake photo** or **Pair a phone**. **Choose an existing photo** also accepts JPEG, PNG or WebP files up to 32 MiB.
 2. The visitor scans the kiosk QR with the phone’s standard camera and opens the link. The page displays a reply QR.
-3. On the kiosk, select **Scan phone’s reply**, grant camera access and hold the phone screen up to the kiosk camera. Keep both pages open until the transfer finishes.
+3. Hold the phone screen up to the kiosk camera. After a camera capture, scanning starts automatically on the selected camera. When using an existing file, select **Scan phone’s reply**. Keep both pages open until the transfer finishes.
 4. On the phone, select **Save photo** to download the original. On phones that support file sharing, **Share photo** also opens the system share sheet. On the kiosk, **Next visitor** clears the selection and pairing session.
 
 If the booth already captures photos in the same page, its capture handler can start pairing using the original image blob:
@@ -25,6 +25,12 @@ import { startPhotoSession } from './app.js';
 // jpegBlob is the JPEG from the kiosk camera.
 await startPhotoSession(new File([jpegBlob], 'Photo.jpg', { type: 'image/jpeg' }));
 ```
+
+## Run the kiosk locally
+
+The application files can be served by any static web host. For a local camera test on a kiosk with Python installed, run `python -m http.server 8080 --bind 127.0.0.1` from this folder and open `http://localhost:8080/` in the kiosk browser.
+
+The current QR uses the address where the kiosk opened PhotoPass. A first-time visitor on cellular must be able to reach that address to load the receiver interface. A loopback address only works on the kiosk itself. Running the whole installation at the venue would require a reachable local network for visitors or a separately provisioned receiver on each phone. WebRTC still uses public STUN for internet pairing.
 
 ## What each service handles
 

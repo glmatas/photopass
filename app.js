@@ -1,5 +1,6 @@
 import { PhotoPeer } from './peer.js';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js';
+import { openCapture, takePhoto } from './camera.js';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error'];
@@ -16,6 +17,11 @@ let picked;
 let previousPreview;
 let receivedURL;
 let receivedFile;
+let capture;
+let captureController;
+let captureVersion = 0;
+let selectedCameraId;
+let capturedHere = false;
 
 function show(name) {
   page = name;
@@ -30,8 +36,66 @@ function stopScan() {
   el('scanner').hidden = true;
 }
 
+function stopCapture() {
+  captureVersion++;
+  captureController?.abort();
+  captureController = undefined;
+  capture = undefined;
+  el('capture-video').hidden = true;
+  el('camera-picker').hidden = true;
+  el('take-button').hidden = true;
+  el('take-button').disabled = true;
+}
+
+function cameraMessage(error) {
+  if (['NotAllowedError', 'SecurityError'].includes(error.name)) return 'Allow camera access in your browser’s site settings, then select Enable camera.';
+  if (['NotReadableError', 'AbortError'].includes(error.name)) return 'The camera could not start. Close any other app using it, then try again.';
+  if (['NotFoundError', 'OverconstrainedError'].includes(error.name)) return 'No camera was found. Connect a camera and select Enable camera, or choose an existing photo.';
+  return 'Camera unavailable. You can enable it again or choose an existing photo.';
+}
+
+async function startCapture() {
+  if (role !== 'kiosk' || page !== 'start') return;
+  stopCapture();
+  const version = captureVersion;
+  captureController = new AbortController();
+  el('camera-button').hidden = false;
+  el('camera-button').disabled = true;
+  el('camera-button').textContent = 'Opening camera…';
+  el('retake-button').hidden = true;
+  el('start-button').hidden = true;
+  el('capture-status').textContent = 'Allow camera access to see your live preview.';
+  try {
+    const active = await openCapture(el('capture-video'), selectedCameraId, captureController.signal);
+    if (version !== captureVersion) { active.stop(); return; }
+    capture = active;
+    selectedCameraId = active.deviceId;
+    const select = el('camera-select');
+    select.replaceChildren(...active.devices.map((device, index) => new Option(device.label || 'Camera ' + (index + 1), device.deviceId)));
+    select.value = selectedCameraId || '';
+    el('camera-picker').hidden = active.devices.length < 2;
+    el('camera-button').hidden = true;
+    el('capture-video').hidden = false;
+    el('take-button').disabled = el('take-button').hidden = false;
+    el('capture-status').textContent = '';
+    el('capture-video').srcObject?.getVideoTracks()[0]?.addEventListener('ended', () => {
+      if (version !== captureVersion) return;
+      stopCapture();
+      el('camera-button').textContent = 'Enable camera';
+      el('camera-button').hidden = el('camera-button').disabled = false;
+      el('capture-status').textContent = 'Camera disconnected. Reconnect it or choose an existing photo.';
+    }, { once: true });
+  } catch (error) {
+    if (version !== captureVersion) return;
+    el('camera-button').hidden = el('camera-button').disabled = false;
+    el('camera-button').textContent = 'Enable camera';
+    el('capture-status').textContent = cameraMessage(error);
+  }
+}
+
 function cleanUp() {
   generation++;
+  stopCapture();
   stopScan();
   peer?.close();
   peer = undefined;
@@ -40,6 +104,7 @@ function cleanUp() {
   if (receivedURL) URL.revokeObjectURL(receivedURL);
   if (previousPreview) URL.revokeObjectURL(previousPreview);
   receivedURL = previousPreview = receivedFile = picked = undefined;
+  capturedHere = false;
 }
 
 function reset(clearLocation = true) {
@@ -56,6 +121,7 @@ function reset(clearLocation = true) {
   el('pair-text').value = el('manual-input').value = '';
   el('manual-tools').open = false;
   el('start-button').disabled = true;
+  el('start-button').hidden = el('retake-button').hidden = true;
   el('file-label').textContent = 'JPEG, PNG or WebP · Up to 32 MiB';
   el('scan-status').textContent = el('status').textContent = '';
   el('progress').value = 0;
@@ -157,26 +223,39 @@ async function pair(text, receiver, current) {
   }
   el('status').textContent = '';
   show('pairing');
+  if (!receiver && capturedHere && qrAvailable) scanReply();
 }
 
-function selectFile(file) {
+function clearPicked() {
   picked = undefined;
+  capturedHere = false;
   if (previousPreview) URL.revokeObjectURL(previousPreview);
   previousPreview = undefined;
   el('preview').removeAttribute('src');
   el('preview').hidden = true;
-  el('start-button').disabled = true;
+  el('start-button').disabled = el('start-button').hidden = true;
+  el('retake-button').hidden = true;
+}
+
+function selectFile(file, fromCamera = false) {
   if (!file) return;
   if (!allowedTypes.has(file.type) || file.size === 0 || file.size > 32 * 1024 * 1024) {
     el('file-label').textContent = 'Choose a nonempty JPEG, PNG or WebP up to 32 MiB.';
     return;
   }
+  clearPicked();
+  stopCapture();
+  capturedHere = fromCamera;
   picked = file;
   previousPreview = URL.createObjectURL(file);
   el('preview').src = previousPreview;
   el('preview').hidden = false;
   el('file-label').textContent = file.name + ' · ' + (file.size / 1000000).toLocaleString(undefined, { maximumFractionDigits: 2 }) + ' MB';
-  el('start-button').disabled = false;
+  el('camera-button').hidden = true;
+  el('capture-status').textContent = '';
+  el('retake-button').hidden = false;
+  el('retake-button').textContent = fromCamera ? 'Retake photo' : 'Use camera';
+  el('start-button').hidden = el('start-button').disabled = false;
 }
 
 async function begin() {
@@ -256,9 +335,36 @@ function requireBrowser() {
 }
 
 el('file-input').addEventListener('change', event => selectFile(event.target.files[0]));
+el('camera-button').addEventListener('click', startCapture);
+el('camera-select').addEventListener('change', () => {
+  selectedCameraId = el('camera-select').value;
+  startCapture();
+});
+el('take-button').addEventListener('click', async () => {
+  if (!capture || el('take-button').disabled) return;
+  const version = captureVersion;
+  el('take-button').disabled = true;
+  try {
+    const photo = await takePhoto(el('capture-video'));
+    if (version === captureVersion) selectFile(photo, true);
+  } catch {
+    if (version === captureVersion) el('capture-status').textContent = 'The photo could not be captured. Wait for a clear preview and try again.';
+  } finally {
+    if (version === captureVersion) el('take-button').disabled = false;
+  }
+});
+el('retake-button').addEventListener('click', () => {
+  clearPicked();
+  el('file-input').value = '';
+  el('file-label').textContent = 'JPEG, PNG or WebP · Up to 32 MiB';
+  startCapture();
+});
 el('start-button').addEventListener('click', begin);
-el('reset-button').addEventListener('click', () => reset());
-el('scan-button').addEventListener('click', async () => {
+el('reset-button').addEventListener('click', () => {
+  reset();
+  if (role === 'kiosk') startCapture();
+});
+async function scanReply() {
   if (cameraPending || camera) return;
   const current = generation;
   cameraPending = true;
@@ -266,9 +372,13 @@ el('scan-button').addEventListener('click', async () => {
   el('scanner').hidden = false;
   el('scan-status').textContent = 'Allow camera access, then hold the phone’s reply code in view.';
   try {
-    const release = await startCamera(el('scanner'), acceptReply);
+    const release = await startCamera(el('scanner'), acceptReply, selectedCameraId);
     if (current !== generation || page !== 'pairing') release();
-    else camera = release;
+    else {
+      camera = release;
+      el('scan-button').hidden = true;
+      el('scan-status').textContent = 'Hold the phone’s reply code in front of this camera.';
+    }
   } catch {
     if (current === generation) {
       el('scanner').hidden = true;
@@ -279,7 +389,8 @@ el('scan-button').addEventListener('click', async () => {
   } finally {
     if (current === generation) cameraPending = false;
   }
-});
+}
+el('scan-button').addEventListener('click', scanReply);
 el('manual-apply').addEventListener('click', () => acceptReply(el('manual-input').value));
 el('copy-button').addEventListener('click', async () => {
   try {
@@ -300,6 +411,10 @@ window.addEventListener('pageshow', event => { if (event.persisted) location.rel
 window.addEventListener('hashchange', () => {
   reset(false);
   if (location.hash) openOffer(location.href);
+  else if (role === 'kiosk') startCapture();
 });
 if (location.hash) openOffer(location.href);
-else show('start');
+else {
+  show('start');
+  startCapture();
+}

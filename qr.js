@@ -100,13 +100,16 @@ export function drawCode(canvas, text) {
   }
 }
 
-export async function startCamera(video, onCode) {
+export async function startCamera(video, onCode, deviceId) {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('Camera scanning requires HTTPS and a browser with camera access. You can also paste the code.');
   }
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: {
+      ...(deviceId ? { deviceId: { ideal: deviceId } } : { facingMode: { ideal: 'environment' } }),
+      width: { ideal: 1280 }, height: { ideal: 720 },
+    },
   });
   let stopped = false;
   let timer;
