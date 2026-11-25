@@ -41,6 +41,18 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   let version;
   let animation;
   let nextFrame = 0;
+  let offerCanvas, nextOfferAt = 0, offerUntil = 0;
+
+  function setOffer(bytes) {
+    offerCanvas = undefined;
+    offerUntil = nextOfferAt = 0;
+    if (!bytes || !encoder) return;
+    const qr = createQR([{ data: bytes, mode: 'byte' }], { errorCorrectionLevel: 'M' });
+    const raster = rasterizeQr(qr.modules.size, qr.modules.data, margin);
+    offerCanvas = document.createElement('canvas');
+    offerCanvas.width = offerCanvas.height = raster.size;
+    offerCanvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(raster.pixels.buffer), raster.size, raster.size), 0, 0);
+  }
 
   function configure() {
     const standardBudget = (largeSquares ? largeSquareBytes : fastBytes) - idLength - HEADER_LEN;
@@ -114,6 +126,7 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     animation = undefined;
     encoder = null;
     container = null;
+    offerCanvas = undefined;
     if (active.get(canvas) === stop) {
       active.delete(canvas);
       screen.fillStyle = 'white';
@@ -125,7 +138,13 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     if (!encoder) return;
     try {
       if (now >= nextFrame) {
-        draw();
+        if (offerCanvas && version && now >= nextOfferAt) {
+          offerUntil = now + 180;
+          nextOfferAt = now + 2300;
+        }
+        if (offerCanvas && now < offerUntil) {
+          screen.drawImage(offerCanvas, 0, 0, canvas.width, canvas.height);
+        } else draw();
         // A late or resumed tab holds the current frame, never bursts missed ones.
         const rate = highSpeed ? 30 : largeSquares ? 12 : 24;
         nextFrame = Math.max(nextFrame + 1000 / rate, now + 750 / rate);
@@ -148,5 +167,5 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     cancelAnimationFrame(animation);
     animation = undefined;
   }
-  return { id, start, pause, stop, setLargeSquares, setHighSpeed, setColor(enabled) { color = Boolean(enabled); } };
+  return { id, start, pause, stop, setOffer, setLargeSquares, setHighSpeed, setColor(enabled) { color = Boolean(enabled); } };
 }

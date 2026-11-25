@@ -12,7 +12,7 @@ function loadWorklet(context) {
 
 // The caller owns and resumes the AudioContext inside a tap. Each modem owns
 // its worker, capture tracks, and scheduled speaker source.
-export async function openSoundModem({ context, listen = false, onPacket, onError, signal, micTimeoutMs = 8000 }) {
+export async function openSoundModem({ context, listen = false, onPacket, onError, signal, micTimeoutMs = 8000, cameraGroup }) {
   if (signal?.aborted) throw aborted();
   if (!context || context.state === 'closed') throw new Error('Sound playback is unavailable.');
   const worker = new Worker(new URL('./vendor/sound/modem-worker.js', import.meta.url));
@@ -84,12 +84,31 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
         resolve();
       }
       const cancel = () => finish(undefined, aborted());
-      const timer = setTimeout(() => finish(undefined, new Error('Microphone permission timed out.')), micTimeoutMs);
+      const timer = setTimeout(() => finish(stream, new Error('Microphone permission timed out.')), micTimeoutMs);
       life.signal.addEventListener('abort', cancel, { once: true });
-      navigator.mediaDevices.getUserMedia({
-        video: false,
-        audio: { channelCount: { ideal: 1 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      }).then(s => finish(s), error => finish(undefined, error));
+      const audio = { channelCount: { ideal: 1 }, echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      if (cameraGroup) audio.groupId = { ideal: cameraGroup };
+      navigator.mediaDevices.getUserMedia({video:false, audio}).then(async first => {
+        if (cameraGroup === undefined || closed || decided) return finish(first);
+        // Labels and groups may only become visible after mic permission. Keep
+        // the working input unless the camera's microphone opens successfully.
+        stream = first;
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const inputs = devices.filter(d => d.kind === 'audioinput' && d.deviceId && !['default','communications'].includes(d.deviceId));
+          const candidates = inputs.filter(d => cameraGroup ? d.groupId === cameraGroup : /\bbrio\b/i.test(d.label));
+          const track = first.getAudioTracks()[0];
+          if (!closed && !decided && candidates.length === 1 &&
+              track?.getSettings?.().deviceId !== candidates[0].deviceId &&
+              !(cameraGroup && track?.getSettings?.().groupId === cameraGroup)) {
+            const preferred = await navigator.mediaDevices.getUserMedia({video:false, audio:{...audio, deviceId:{exact:candidates[0].deviceId}}});
+            if (closed || decided) { preferred.getTracks().forEach(t => t.stop()); return; }
+            first.getTracks().forEach(t => t.stop());
+            return finish(preferred);
+          }
+        } catch { /* The default mic also works if a webcam is unplugged. */ }
+        if (!decided) finish(first);
+      }, error => finish(undefined, error));
     });
   }
   function samples(pcm) {

@@ -1,7 +1,8 @@
-import { PhotoPeer } from './peer.js?v=3';
+import { PhotoPeer } from './peer.js?v=10';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js';
+import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js?v=10';
+import {receivePickup} from './pickup-direct.js?v=10';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
@@ -22,6 +23,7 @@ let capture;
 let captureController;
 let captureVersion = 0;
 let selectedCameraId;
+let selectedCameraGroup = '';
 let capturedHere = false;
 let receiverPage;
 let lightSender;
@@ -143,6 +145,8 @@ async function startCapture() {
     if (version !== captureVersion) { active.stop(); return; }
     capture = active;
     selectedCameraId = active.deviceId;
+    selectedCameraGroup = el('capture-video').srcObject?.getVideoTracks()[0]?.getSettings?.().groupId ||
+      active.devices.find(d => d.deviceId === selectedCameraId)?.groupId || '';
     const select = el('camera-select');
     select.replaceChildren(...active.devices.map((device, index) => new Option(device.label || 'Camera ' + (index + 1), device.deviceId)));
     select.value = selectedCameraId || '';
@@ -388,7 +392,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=9');
+    const { prepareLightSender } = await import('./light-sender.js?v=10');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -397,7 +401,7 @@ async function beginLight() {
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
     const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
-    url.search = '?9';
+    url.search = '?10';
     url.hash = lightHash(transfer.id) + '.' + nonce;
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -414,7 +418,7 @@ async function beginLight() {
       el('light-join').hidden = streaming;
       el('light-stream').hidden = !streaming;
       el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
-    });
+    }, {file:picked, cameraGroup:selectedCameraGroup});
   } catch (error) {
     if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
   }
@@ -433,10 +437,51 @@ async function readLight() {
   let hintTimer;
   let started;
   let previousProgress = 0;
+  let directProgress = 0;
+  let cameraFailure;
+  let cameraReadyAt;
+  let tone;
+  signal.addEventListener('abort', () => tone?.abort(), { once:true });
+  function playPacket(bytes) {
+    tone?.abort();
+    tone = new AbortController();
+    void readyTone(bytes, tone.signal);
+  }
+  const token = pickupNonce && pickupPacket(lightId, pickupNonce);
+  function finishPickup(blob, name, route) {
+    if (signal.aborted) return;
+    const seconds = (performance.now() - cameraReadyAt) / 1000;
+    stopLight();
+    done(blob, name);
+    const timing = seconds >= 0.1
+      ? ' in ' + seconds.toFixed(1) + ' s (' + Math.round(blob.size / (1000 * seconds)) + ' KB/s)' : '';
+    el('done-description').textContent = 'Received' + timing + ' ' + route + '. Save the original before closing this tab.';
+  }
+  const onControl = token && receivePickup(token, lightId, signal, playPacket, (blob, name) => {
+    finishPickup(blob, name, 'by direct connection');
+  }, fraction => {
+    directProgress = fraction;
+    if (signal.aborted) return;
+    if (!fraction && cameraFailure) { cameraError(cameraFailure); return; }
+    if (fraction > previousProgress || fraction === 0) {
+      const amount = Math.floor(100 * Math.max(fraction, previousProgress));
+      el('light-progress').value = amount;
+      el('light-label').textContent = amount + '% received · ' + (fraction ? 'Receiving directly.' : 'Keep the whole kiosk square in view.');
+    }
+  });
+  function cameraError(message) {
+    if (signal.aborted) return;
+    stopLight();
+    el('light-label').textContent = String(message);
+    el('light-start').hidden = false;
+    el('light-sound-help').hidden = false;
+  }
   const hintAfterPause = () => {
     clearTimeout(hintTimer);
     hintTimer = setTimeout(() => {
-      if (!signal.aborted) el('light-label').textContent = 'Keep all four corners in view. If progress stalls, enlarge the moving code on the kiosk.';
+      if (!signal.aborted && !directProgress) el('light-label').textContent = previousProgress
+        ? 'Hold steady with all four corners in view. If progress stays here, enlarge the square under Kiosk options.'
+        : 'Looking for the photo. Move closer while keeping all four corners in view. For a blurry camera, select Larger squares under Kiosk options.';
     }, 10000);
   };
   signal.addEventListener('abort', () => clearTimeout(hintTimer), { once: true });
@@ -444,16 +489,19 @@ async function readLight() {
   el('light-sound-help').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=8');
+    const { startLightReceiver } = await import('./light-receiver.js?v=10');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
+      onControl,
+      onCameraReady() { cameraReadyAt = performance.now(); },
       signal,
       onProgress(fraction) {
         if (signal.aborted) return;
         if (fraction < previousProgress) started = undefined;
         if (fraction > 0 && !started) started = performance.now();
         previousProgress = fraction;
+        if (directProgress > fraction) return;
         const percent = Math.min(100, Math.floor(fraction * 100));
         el('light-progress').value = percent;
         let hint = 'Keep the whole moving square in view.';
@@ -465,36 +513,22 @@ async function readLight() {
         el('light-label').textContent = percent < 100 ? percent + '% received · ' + hint : 'Verifying the original photo…';
         hintAfterPause();
       },
-      onPhoto(blob, name, seconds) {
-        if (signal.aborted) return;
-        stopLight();
-        done(blob, name);
-        if (seconds >= 1) {
-          const rate = Math.round(blob.size / (1000 * seconds));
-          el('done-description').textContent = 'Received in ' + seconds.toFixed(1) + ' s (' + rate + ' KB/s). Save the original before closing this tab.';
-        }
-      },
+      onPhoto(blob, name) { finishPickup(blob, name, 'by camera'); },
       onError(message) {
-        if (signal.aborted) return;
-        stopLight();
-        el('light-label').textContent = String(message);
-        el('light-start').hidden = false;
-        el('light-sound-help').hidden = false;
+        if (directProgress > 0) cameraFailure = message;
+        else cameraError(message);
       }
     });
     if (signal.aborted || page !== 'light-receive') release();
     else {
       lightReceiver = release;
-      if (pickupNonce) void readyTone(pickupPacket(lightId, pickupNonce), signal);
+      if (token) playPacket(token);
+      if (!previousProgress && !directProgress) el('light-label').textContent = 'Camera ready. Keep the whole kiosk square in view.';
       hintAfterPause();
     }
   } catch (error) {
     if (current !== generation || signal.aborted) return;
-    stopLight();
-    el('light-start').hidden = false;
-    el('light-sound-help').hidden = false;
-    el('light-label').textContent = error.name === 'NotAllowedError'
-      ? 'Allow camera access in your browser, then try again.' : error.message;
+    cameraError(error.name === 'NotAllowedError' ? 'Allow camera access in your browser, then try again.' : error.message);
   }
 }
 
@@ -796,7 +830,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7', '?8', '?9'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8', '?9', '?10'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }

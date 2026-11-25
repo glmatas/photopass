@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { chromium } from 'playwright';
+import { chromium, firefox } from 'playwright';
 import { choosePhoto, savedPhoto } from './photo-qa-fixture.mjs';
 
 // Two independent kiosk/phone page pairs. Their only simulated physical link
@@ -166,10 +166,11 @@ async function waitForPhoto(page, label, deadlineMs) {
 
 const errors = [];
 try {
-  browser = await chromium.launch({
+  const engine = args.has('--firefox') ? firefox : chromium;
+  browser = await engine.launch(engine === chromium ? {
     channel: 'chrome', headless: true,
     args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--autoplay-policy=no-user-gesture-required']
-  });
+  } : {headless:true});
   const context = await browser.newContext({ acceptDownloads: true });
   await context.addInitScript(installCameraHarness, { emulateDisplays: !args.has('--native-scheduling'), gray:args.has('--gray'), footprint:args.has('--fixed') ? 532 : 0, impaired:args.has('--impaired') });
   context.on('page', page => page.on('pageerror', error => errors.push(error.message)));
@@ -180,7 +181,7 @@ try {
   pages.push(main);
   await main.goto(args.has('--fast-entry') ? url + '?fast' : url);
   const other = await openChild(main, 'otherBooth', url);
-  await Promise.all([main, other].map(page => page.locator('#file-input').waitFor({ state: 'attached' })));
+  await Promise.all([main, other].map(page => page.waitForFunction(() => window.qa?.cameraCalls > 0)));
   const source = await main.evaluate(choosePhoto, { index: 0, size: fixtureBytes, textured: args.has('--textured') });
   const otherSource = await other.evaluate(choosePhoto, { index: 1, size: 25_000 });
   assert.notEqual(source.hash, otherSource.hash);

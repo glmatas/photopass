@@ -50,9 +50,9 @@ function cameraError(error) {
 
 // The 12-byte prefix belongs to PhotoPass. The enclosed Decimen v0.3.0
 // frames may arrive in any order, with omissions or repeated camera frames.
-export async function startLightReceiver(video, { id, onProgress, onPhoto, onError, signal }) {
+export async function startLightReceiver(video, { id, onCameraReady, onControl, onProgress, onPhoto, onError, signal }) {
   if (typeof id !== 'string' || !/^[\da-f]{24}$/i.test(id)) throw new Error('Scan the camera-transfer link for your photo again.');
-  if (!navigator.mediaDevices?.getUserMedia || !globalThis.crypto?.subtle) throw new Error('Open this HTTPS link in a browser with camera access.');
+  if (!navigator.mediaDevices?.getUserMedia || !globalThis.crypto?.subtle) throw new Error('Open this HTTPS link in your phone’s main browser, such as Safari or Chrome, to use the camera.');
   if (signal?.aborted) throw cancelled();
   const expected = Uint8Array.from(id.match(/../g), pair => parseInt(pair, 16));
   const sessionId = expected[0] * 256 + expected[1];
@@ -160,6 +160,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
   function decoded(raw) {
     try {
       const bytes = raw && !(raw instanceof Uint8Array) ? new Uint8Array(raw) : raw;
+      if (bytes?.[0] === 80 && bytes[1] === 80 && onControl?.(bytes)) return;
       misses = receive(bytes) ? 0 : Math.min(misses + 1, 30);
     } catch (error) { fail(error); }
   }
@@ -273,6 +274,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     video.muted = true;
     video.srcObject = stream;
     await Promise.race([video.play(), stopped]);
+    if (!closed) onCameraReady?.();
     try {
       const count = navigator.hardwareConcurrency >= 4 ? 2 : 1;
       for (let i = 0; i < count; i++) makeWorker();

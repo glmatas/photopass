@@ -8,13 +8,23 @@ PhotoPass delivers the original kiosk photo to a phone. By default, the visitor 
 2. On the phone, scan the QR, open the link and allow camera access. Keep the phone pointed at that same square. The photo appears automatically once the original file is verified.
 3. To keep a copy, select **Save photo** or use the share sheet. The kiosk operator can select **Next visitor** when pickup is finished.
 
-Allow the kiosk microphone during setup for the quickest start. Once the phone's camera is running, the page tries to play a short ready tone identifying this pickup. The kiosk starts the moving square as soon as it hears a match. The phone needs only camera permission. If the browser blocks sound, or the kiosk cannot hear it, the first stream starts automatically after eight seconds. The pickup QR reappears periodically in the same spot for late arrivals. Receiving continues across these pauses.
+Allow the kiosk microphone during setup for the quickest start. PhotoPass prefers a microphone in the selected camera's device group. If the browser provides no group, it can pick a uniquely labelled Brio microphone or use the system input. Logitech lists two built-in microphones for the Brio 4K. [Brio 4K specifications](https://secure.logitech.com/content/dam/logitech/en/video-collaboration/pdf/brio-datasheet.pdf) · [Media Capture device groups](https://www.w3.org/TR/mediacapture-streams/)
+
+Once the phone's rear camera is running, the page tries to play a short ready tone identifying this pickup. A matching reply starts the moving square immediately. The camera collects the photo while the browsers try a faster direct data channel. To pair, the kiosk briefly includes its connection offer in the moving square and the phone answers through its speaker. The first verified original appears on the phone. Guests grant only camera access and can hold the phone in the same position throughout.
+
+If the phone is muted, its audio goes to headphones, or the kiosk cannot hear it, the first screen transfer starts five seconds after the kiosk shows the QR. Without an audible reply, the kiosk repeats nine seconds of streaming and 2.4 seconds of pickup QR so late arrivals can scan the same spot. A confirmed phone gets an initial 18-second stream. If the reply is lost or a network blocks the direct channel, the camera keeps its collected data. The screen shows acquisition or transfer progress. Denied or disconnected cameras show recovery controls. Several visitors can collect the same optical stream while one uses a direct connection.
+
+#### Browser audio compatibility
+
+The visitor's phone uses audible PCM tones through Web Audio once camera capture starts. Chrome documents an active-capture autoplay exception. For iPhone Safari, WebKit documents an exception for media-stream-backed playback. A synthesized tone can still be blocked. Firefox for Android exposes autoplay controls, including a cellular-only restriction. Samsung Internet uses Chromium with its own release cycle and settings. PhotoPass tests the actual audio context on each phone and retries a suspended context on an ordinary tap. [Chrome](https://developer.chrome.com/blog/web-audio-autoplay/) · [WebKit](https://webkit.org/blog/7763/a-closer-look-into-webrtc/) · [Firefox for Android](https://support.mozilla.org/en-US/kb/playing-videos-firefox-android) · [Samsung Internet for Android](https://developer.samsung.com/browser/release-note/android-release-note.html)
+
+A QR scanner's embedded browser can have different policies from the phone's main browser. Android WebView requires a gesture for media playback by default. On iOS the containing app can configure this requirement. If camera access is unavailable, the receiver directs the visitor to their main browser. [Android WebView](https://developer.android.com/reference/android/webkit/WebSettings#setMediaPlaybackRequiresUserGesture(boolean)) · [Apple WKWebView](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration/mediatypesrequiringuseractionforplayback)
 
 The short link identifies the visitor’s photo. Each moving frame carries part of that file. Missed frames are recoverable, and the phone verifies the entire SHA-256 digest before saving. The kiosk can keep displaying the stream while several authorized viewers collect the same photo. A camera in view of an optical stream can read it.
 
 ### Speed and lighting
 
-**High speed** is the default. Under **Kiosk options**, use **Enlarge square** if a phone has trouble resolving the grid. Keep all four corners in view. The phone reports elapsed time and KB/s after verifying the photo. Changing into or out of High speed restarts collection.
+**High speed** is the default. Under **Kiosk options**, use **Enlarge square** if a phone has trouble resolving the grid. Keep all four corners in view. The phone reports which route delivered the verified photo, elapsed time from the live camera preview to verification, and average KB/s. Changing into or out of High speed restarts collection.
 
 High speed targets 30 frames/s, with up to three independently checked 2,915-byte packets per frame. Brightness, warm/cool tint and green/magenta tint carry different packets. Brightness alone can deliver the entire file. A receiver backs off a color layer that repeatedly fails. Groups of up to 48 source packets use a systematic Cauchy erasure code over GF(256). Any 48 distinct valid rows recover a full group, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
 
@@ -31,13 +41,24 @@ node tests/optical-benchmark.mjs --field-size --fixed --textured --fast
 
 Add `--impaired` to both commands to hold one in five camera updates, apply a 0.4-pixel blur, and reduce contrast and saturation. Use `--gray` to remove color completely. For a venue measurement, send the same original in both modes using the same phone, kiosk, distance and lighting. Compare the elapsed times shown on the phone.
 
+The following tests run the full pickup using digital speaker-to-microphone audio and camera pixels. They hold camera permission, send a wrong-session tone, grant permission, and verify the original bytes and released devices. The second command rejects the network handshake. The third closes an active direct channel after 160 KiB. The optical benchmark above runs with audio unavailable.
+
+```sh
+node tests/pickup-routes.mjs --brio
+node tests/pickup-routes.mjs --break-rtc
+node tests/pickup-routes.mjs --drop-rtc
+node tests/pickup-routes.mjs --lose-answer
+```
+
+With Playwright's Firefox and WebKit engines installed, run `node tests/browser-autoplay.mjs` to report whether a fresh page actually starts a tone after camera capture. Desktop engine results are specific to that build and its media settings.
+
 Under **Transfer speed**, **Four colors** uses a lower-density grid. Brightness carries the complete stream and a warm/cool layer carries a second packet. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching between Four colors and Black and white keeps the phone's collected packets. **Larger squares** further reduces the density and restarts collection.
 
 In Black and white, the display can send up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture in this mode needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
 
 ## Many kiosks, one receiver URL
 
-Independent sessions can use the same receiver path without reserving a room. The pickup link’s URL fragment includes a 96-bit prefix of the photo digest and a fresh 48-bit random identifier. A kiosk accepts a ready tone only when both match. Each optical frame carries the photo identifier. A phone ignores frames for other photos and checks the complete digest before offering the file. The static host serves the application files. Photo data travels from the kiosk screen to the phone camera.
+Independent sessions can use the same receiver path without reserving a room. The pickup link’s URL fragment includes a 96-bit prefix of the photo digest and a fresh 48-bit random identifier. A kiosk accepts a ready tone only when both match. Each optical photo frame carries the photo identifier. A phone ignores frames for other photos and checks the complete digest before offering the file. The static host serves the application files. Photo data travels through the screen or an encrypted WebRTC channel. Public STUN assists the direct path.
 
 When several installations use a centrally hosted receiver, pass its HTTPS address to the kiosk’s existing capture handler:
 

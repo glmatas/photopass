@@ -112,7 +112,8 @@ function gather(session) {
         completionTimer ??= setTimeout(finish, 60);
       }
     }
-    timer = setTimeout(() => {
+    if (session.quickGather) timer = setTimeout(finish, 3500);
+    else timer = setTimeout(() => {
       const hasMapped = / typ (?:srflx|prflx)\b/i.test(pc.localDescription?.sdp || "") ||
         session.candidates.some(c => / typ (?:srflx|prflx)\b/i.test(c.candidate));
       if (hasMapped) finish();
@@ -210,9 +211,10 @@ export class PhotoPeer {
     return s;
   }
 
-  async offer(file) {
+  async offer(file, { quickGather = false } = {}) {
     requireSize(file?.size);
     const s = this._start("sender");
+    s.quickGather = quickGather;
     try {
       const type = detectedType(new Uint8Array(await file.slice(0, 12).arrayBuffer()));
       s.file = file;
@@ -229,9 +231,10 @@ export class PhotoPeer {
     }
   }
 
-  async answer(offer) {
+  async answer(offer, { quickGather = false } = {}) {
     const remote = checkDescription(offer, "offer");
     const s = this._start("receiver");
+    s.quickGather = quickGather;
     try {
       s.pc.ondatachannel = event => {
         if (this.session !== s || s.channel || event.channel.label !== "photo-v1") return event.channel.close();
@@ -344,6 +347,6 @@ export class PhotoPeer {
     s.channel.send(JSON.stringify({ kind: "ack", hash: s.meta.hash }));
     s.phase = "done";
     clearTimeout(s.timer);
-    this.callbacks.onPhoto?.(blob, photoName(s.meta.name, type));
+    this.callbacks.onPhoto?.(blob, photoName(s.meta.name, type), s.meta.hash);
   }
 }
