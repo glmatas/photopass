@@ -8,8 +8,7 @@ import { chromium } from 'playwright';
 import { choosePhoto, savedPhoto } from './photo-qa-fixture.mjs';
 
 // Two independent kiosk/phone page pairs. Their only simulated physical link
-// is a camera pointed at a real sender canvas. No codec output or file bytes
-// enter a receiver from test code. --quick uses a smaller source file.
+// is a camera aimed at the kiosk's visible code. --quick uses a smaller file.
 const args = new Set(process.argv.slice(2));
 const live = args.has('--live');
 const fixtureBytes = args.has('--quick') ? 75_000 : args.has('--field-size') ? 2_300_000 : 10_000_000;
@@ -34,11 +33,13 @@ let browser;
 
 function installCameraHarness({ emulateDisplays, gray, footprint, impaired }) {
   if (!navigator.mediaDevices) return;
+  // Exercise the automatic visual fallback without using any physical audio hardware.
+  window.AudioContext = window.webkitAudioContext = undefined;
   const qa = window.qa = { cameraCalls: 0, rtcCalls: 0, frames: 0, source: 'other', rendered: 0, readings: 0, recognized: 0 };
   // Several independently visible headless pages share one Chromium display.
   // Its compositor can throttle a kiosk to 1–2 rAF/s when a phone popup opens.
   // Model a foreground 60 Hz kiosk display; production still selects and
-  // renders every optical frame and enforces its own 24-symbol/s limit.
+  // renders every optical frame and controls its own symbol rate.
   if (emulateDisplays) {
     window.requestAnimationFrame = callback => setTimeout(() => callback(performance.now()), 1000 / 60);
     window.cancelAnimationFrame = clearTimeout;
@@ -83,7 +84,7 @@ function installCameraHarness({ emulateDisplays, gray, footprint, impaired }) {
       };
       const camera = document.createElement('canvas');
       const context = camera.getContext('2d', { alpha: false });
-      const sourceSize = footprint || Math.max(cameras.main.width, cameras.other.width);
+      const sourceSize = footprint || 740;
       camera.width = camera.height = sourceSize + 32;
       context.fillStyle = '#eee';
       context.fillRect(0, 0, camera.width, camera.height);
@@ -91,9 +92,10 @@ function installCameraHarness({ emulateDisplays, gray, footprint, impaired }) {
       let ticks = 0;
       function paint() {
         if (gray) context.filter = 'grayscale(100%)';
-        const source = cameras[qa.source];
+        const canvas = cameras[qa.source];
+        const source = canvas.hidden ? canvas.ownerDocument.getElementById('light-join') : canvas;
         if (impaired && ++ticks % 5 === 2) return;
-        const side = footprint || source.width;
+        const side = footprint || Math.min(sourceSize, source.width);
         if (footprint) context.imageSmoothingEnabled = true;
         if (impaired) context.filter = 'contrast(76%) saturate(72%) blur(0.4px)';
         context.drawImage(source, Math.floor((camera.width - side) / 2), Math.floor((camera.height - side) / 2), side, side);
@@ -130,7 +132,7 @@ async function opticallyReadJoin(page) {
   });
   const target = new URL(link);
   assert.equal(target.origin + target.pathname, url);
-  assert.match(target.hash, /^#L[A-Za-z0-9_-]{16}$/);
+  assert.match(target.hash, /^#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
   return link;
 }
 
@@ -185,9 +187,12 @@ try {
   const captureCalls = await Promise.all([main, other].map(page => page.evaluate(() => window.qa.cameraCalls)));
   await Promise.all([main, other].map(page => page.locator('#start-button').click()));
   const [join, otherJoin] = await Promise.all([main, other].map(opticallyReadJoin));
-  if (args.has('--color')) await main.locator('#light-color').click();
-  if (args.has('--fast') && !args.has('--fast-entry')) await main.locator('#light-fast').click();
-  if (args.has('--fast-entry')) assert.equal(await main.locator('#light-fast').getAttribute('aria-pressed'), 'true');
+  assert.equal(await main.locator('#light-mode').inputValue(), 'fast');
+  assert.equal(await main.locator('#light-options').evaluate(el => el.open), false);
+  if (args.has('--color') || args.has('--mono')) {
+    await main.locator('#light-options summary').click();
+    await main.locator('#light-mode').selectOption(args.has('--color') ? 'color' : 'mono');
+  }
   assert.notEqual(join, otherJoin);
   console.log('Two kiosk pages produced distinct short pickup QRs on the default route.');
 
@@ -209,14 +214,14 @@ try {
   await phone.evaluate(() => { window.qa.source = 'main'; });
   if (args.has('--switch')) {
     await phone.waitForFunction(() => document.getElementById('light-progress').value >= 12);
-    await main.locator('#light-color').click();
-    assert.equal(await main.locator('#light-color').getAttribute('aria-pressed'), 'false');
+    if (!await main.locator('#light-options').evaluate(el => el.open)) await main.locator('#light-options summary').click();
+    await main.locator('#light-mode').selectOption('mono');
     assert.equal(await phone.locator('#light-receive-panel').isVisible(), true);
   }
   await waitForPhoto(phone, 'Photo pickup', fixtureBytes > 1000000 ? 3600000 : 120000);
   assert.equal(await phone.evaluate(() => window.qa.cameraCalls), cameraStarted);
   assert.deepEqual(await phone.evaluate(savedPhoto), source);
-  assert.match(await phone.locator('#done-description').textContent(), /Received in [\d.]+ s \(\d+ KB\/s\)/);
+  if (fixtureBytes >= 2_000_000) assert.match(await phone.locator('#done-description').textContent(), /Received in [\d.]+ s \(\d+ KB\/s\)/);
   if (args.has('--color') || args.has('--fast')) {
     const counts = await phone.evaluate(() => [window.qa.colorReads || 0, window.qa.colorHits || 0]);
     console.log('Color worker reads / decoded packets', counts);

@@ -138,11 +138,15 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   }
 
   function start() {
-    if (!encoder || active.get(canvas) === stop) return;
-    active.get(canvas)?.();
+    if (!encoder || animation !== undefined) return;
+    if (active.get(canvas) !== stop) active.get(canvas)?.();
     active.set(canvas, stop);
     nextFrame = performance.now();
     tick(nextFrame);
   }
-  return { id, start, stop, setLargeSquares, setHighSpeed, setColor(enabled) { color = Boolean(enabled); } };
+  function pause() {
+    cancelAnimationFrame(animation);
+    animation = undefined;
+  }
+  return { id, start, pause, stop, setLargeSquares, setHighSpeed, setColor(enabled) { color = Boolean(enabled); } };
 }

@@ -4,15 +4,17 @@ PhotoPass delivers the original kiosk photo to a phone. By default, the visitor 
 
 ## Pick up a photo
 
-1. Open the kiosk page, allow camera access and select **Take photo**. Alternatively, choose an existing JPEG, PNG or WebP up to 32 MiB.
-2. On the phone, scan **Scan to open** with the normal camera. Open the link and allow the page to use the rear camera.
-3. Keep the whole moving square in view until the phone verifies the file. Select **Save photo**, or use the share sheet. On the kiosk, select **Next visitor** when the phone is finished.
+1. On the kiosk, select **Take photo**. The pickup QR appears automatically. For an existing JPEG, PNG or WebP up to 32 MiB, choose the file and select **Show pickup code**.
+2. On the phone, scan the QR, open the link and allow camera access. Keep the phone pointed at that same square. The photo appears automatically once the original file is verified.
+3. To keep a copy, select **Save photo** or use the share sheet. The kiosk operator can select **Next visitor** when pickup is finished.
+
+Allow the kiosk microphone during setup for the quickest start. Once the phone's camera is running, the page tries to play a short ready tone identifying this pickup. The kiosk starts the moving square as soon as it hears a match. The phone needs only camera permission. If the browser blocks sound, or the kiosk cannot hear it, the first stream starts automatically after eight seconds. The pickup QR reappears periodically in the same spot for late arrivals. Receiving continues across these pauses.
 
 The short link identifies the visitor’s photo. Each moving frame carries part of that file. Missed frames are recoverable, and the phone verifies the entire SHA-256 digest before saving. The kiosk can keep displaying the stream while several authorized viewers collect the same photo. A camera in view of an optical stream can read it.
 
 ### Speed and lighting
 
-**High speed** is an optional setting for a close, steady phone camera. Select it before the visitor scans, or open the kiosk with `?fast` to use it for every visitor. Use **Enlarge moving code** when the squares are difficult to resolve. The phone reports elapsed time and KB/s after verifying the photo. Changing into or out of High speed restarts collection.
+**High speed** is the default. Under **Kiosk options**, use **Enlarge square** if a phone has trouble resolving the grid. Keep all four corners in view. The phone reports elapsed time and KB/s after verifying the photo. Changing into or out of High speed restarts collection.
 
 High speed targets 30 frames/s, with up to three independently checked 2,915-byte packets per frame. Brightness, warm/cool tint and green/magenta tint carry different packets. Brightness alone can deliver the entire file. A receiver backs off a color layer that repeatedly fails. Groups of up to 48 source packets use a systematic Cauchy erasure code over GF(256). Any 48 distinct valid rows recover a full group, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
 
@@ -29,15 +31,13 @@ node tests/optical-benchmark.mjs --field-size --fixed --textured --fast
 
 Add `--impaired` to both commands to hold one in five camera updates, apply a 0.4-pixel blur, and reduce contrast and saturation. Use `--gray` to remove color completely. For a venue measurement, send the same original in both modes using the same phone, kiosk, distance and lighting. Compare the elapsed times shown on the phone.
 
-**Try four colors** adds a second packet to each moving frame at the normal square size and frame rate. Brightness carries a complete stream. Phones with a capable decoder can also read a warm/cool layer. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching back to black and white keeps the phone's collected packets. Use **Use larger squares** for cameras that have trouble resolving the grid.
+Under **Transfer speed**, **Four colors** uses a lower-density grid. Brightness carries the complete stream and a warm/cool layer carries a second packet. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching between Four colors and Black and white keeps the phone's collected packets. **Larger squares** further reduces the density and restarts collection.
 
-Allow several minutes for a 10 MB original. The standard setting can display up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
-
-**Enlarge moving code** fills more of the screen. Keep all four corners in view. **Use larger squares** also reduces the density and speed of the frames for cameras that struggle to focus. Changing square size restarts collection of the same photo. Keep both screens open until the phone shows the save button.
+In Black and white, the display can send up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture in this mode needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
 
 ## Many kiosks, one receiver URL
 
-Any number of independent sessions can use the same receiver path without reserving a room. A 96-bit prefix of the photo digest travels in the pickup link’s URL fragment and in every optical frame. A phone ignores frames for other photos, then checks the complete digest. The static host serves the application files. Photo data travels from the kiosk screen to the phone camera.
+Independent sessions can use the same receiver path without reserving a room. The pickup link’s URL fragment includes a 96-bit prefix of the photo digest and a fresh 48-bit random identifier. A kiosk accepts a ready tone only when both match. Each optical frame carries the photo identifier. A phone ignores frames for other photos and checks the complete digest before offering the file. The static host serves the application files. Photo data travels from the kiosk screen to the phone camera.
 
 When several installations use a centrally hosted receiver, pass its HTTPS address to the kiosk’s existing capture handler:
 
@@ -54,11 +54,11 @@ The capture handler runs in a page with the PhotoPass interface. Omit the option
 
 ## Optional direct transfer
 
-For faster delivery on networks that permit a direct WebRTC connection, select **Use direct transfer instead** on the kiosk, or open the kiosk page with `?direct`. In this mode, scan the kiosk QR and turn the phone’s reply code toward the kiosk camera. The kiosk scans the reply automatically after a camera capture. The browsers use public STUN to discover network addresses and transfer the file over an encrypted data channel. A restrictive venue or carrier network can still prevent this connection. Screen transfer works independently of STUN and TURN. [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections)
+For faster delivery on networks that permit a direct WebRTC connection, open **Kiosk options** and select **Pair for direct transfer**, or open the kiosk page with `?direct`. In this mode, scan the kiosk QR and turn the phone’s reply code toward the kiosk camera. The kiosk scans the reply automatically after a camera capture. The browsers use public STUN to discover network addresses and transfer the file over an encrypted data channel. A restrictive venue or carrier network can still prevent this connection. Screen transfer works independently of STUN and TURN. [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections)
 
 ## Camera-free pickup by sound
 
-1. On the kiosk, take a photo or choose an existing file, then select **Use sound instead** below the moving square. Turn on the kiosk speaker. Allow the kiosk microphone if available so it can hear the phone's reply.
+1. On the kiosk, take a photo or choose an existing file, open **Kiosk options** and select **Camera-free pickup by sound**. Turn on the kiosk speaker. Allow the kiosk microphone if available so it can hear the phone's reply.
 2. On the phone, open the sound receiver address shown on the kiosk, or choose **Receive by sound** on the home page. Enter the six digits and tap **Start listening**. If the phone has a camera, **Scan instead of typing** fills in the code with one scan. Allow microphone access, hold the phone near the speaker and keep both pages open. [Open the sound receiver](https://glmatas.github.io/photopass/?listen)
 3. The browsers exchange short tones and try a direct WebRTC transfer. When the network blocks the connection or the kiosk has no microphone, the kiosk speaker can send the complete original. Tap **Save photo** on the phone after verification. A one-way kiosk can keep playing until you select **Next visitor**.
 

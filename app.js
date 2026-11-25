@@ -1,6 +1,7 @@
 import { PhotoPeer } from './peer.js?v=3';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
+import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
@@ -27,6 +28,8 @@ let lightSender;
 let lightReceiver;
 let lightController;
 let lightId;
+let pickupNonce;
+let stopPickupDisplay;
 let sound;
 let retryMode;
 let wakeLock;
@@ -60,7 +63,7 @@ function show(name) {
   if (name !== 'pairing' && document.documentElement.classList.contains('qr-expanded')) setExpanded(false);
   if (name !== 'light-send' && document.documentElement.classList.contains('light-expanded')) expandLight(false);
   for (const panel of panels) el(panel + '-panel').hidden = name !== panel;
-  el('reset-button').hidden = name === 'start';
+  el('reset-button').hidden = name === 'start' || name === 'light-receive';
   let resetLabel = 'Start over';
   if (role === 'phone') resetLabel = 'Close session';
   else if (name === 'done' || name === 'light-send' || name === 'sound-send') resetLabel = 'Next visitor';
@@ -84,10 +87,11 @@ function setExpanded(value) {
 function expandLight(value) {
   document.documentElement.classList.toggle('light-expanded', value);
   el('light-zoom').setAttribute('aria-pressed', String(value));
-  el('light-zoom').textContent = value ? 'Close enlarged view' : 'Enlarge moving code';
 }
 
 function stopLight() {
+  stopPickupDisplay?.();
+  stopPickupDisplay = undefined;
   lightSender?.stop();
   lightSender = undefined;
   lightController?.abort();
@@ -370,8 +374,10 @@ function lightHash(id) {
 }
 
 function parseLightHash(hash) {
-  if (!/^#L[A-Za-z0-9_-]{16}$/.test(hash)) throw new Error('Scan the pickup code on the kiosk again.');
-  const bytes = atob(hash.slice(2).replaceAll('-', '+').replaceAll('_', '/'));
+  const match = /^#L([A-Za-z0-9_-]{16})(?:\.([A-Za-z0-9_-]{8}))?$/.exec(hash);
+  if (!match) throw new Error('Scan the pickup code on the kiosk again.');
+  pickupNonce = match[2];
+  const bytes = atob(match[1].replaceAll('-', '+').replaceAll('_', '/'));
   return Array.from(bytes, byte => byte.charCodeAt(0).toString(16).padStart(2, '0')).join('');
 }
 
@@ -382,7 +388,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=8');
+    const { prepareLightSender } = await import('./light-sender.js?v=9');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -390,25 +396,25 @@ async function beginLight() {
     if (current !== generation) { transfer.stop(); return; }
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
-    url.search = '?8';
-    url.hash = lightHash(transfer.id);
+    const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
+    url.search = '?9';
+    url.hash = lightHash(transfer.id) + '.' + nonce;
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
       : (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
     el('light-size').textContent = capturedHere ? size : picked.name + ' · ' + size;
-    el('light-easy').setAttribute('aria-pressed', 'false');
-    el('light-easy').textContent = 'Use larger squares';
-    el('light-color').disabled = false;
-    el('light-color').setAttribute('aria-pressed', 'false');
-    el('light-color').textContent = 'Try four colors';
-    el('light-easy').disabled = false;
-    el('light-fast').setAttribute('aria-pressed', 'false');
-    el('light-fast').textContent = 'High speed';
-    el('light-mode-note').textContent = picked.size >= 2_000_000 ? 'Keep the phone in place. Large originals can take several minutes.' : '';
+    el('light-options').open = false;
+    el('light-mode').value = 'fast';
+    transfer.setHighSpeed(true);
+    el('light-mode-note').textContent = '';
     el('status').textContent = '';
     show('light-send');
-    if (new URLSearchParams(location.search).has('fast')) setHighSpeed(true);
-    transfer.start();
+    stopPickupDisplay = startPickupDisplay(transfer, pickupPacket(transfer.id, nonce), (streaming, confirmed) => {
+      el('light-send-panel').dataset.pickupState = streaming ? (confirmed ? 'ready' : 'broadcast') : 'join';
+      el('light-join').hidden = streaming;
+      el('light-stream').hidden = !streaming;
+      el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
+    });
   } catch (error) {
     if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
   }
@@ -435,6 +441,7 @@ async function readLight() {
   };
   signal.addEventListener('abort', () => clearTimeout(hintTimer), { once: true });
   el('light-start').hidden = true;
+  el('light-sound-help').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
     const { startLightReceiver } = await import('./light-receiver.js?v=8');
@@ -472,17 +479,20 @@ async function readLight() {
         stopLight();
         el('light-label').textContent = String(message);
         el('light-start').hidden = false;
+        el('light-sound-help').hidden = false;
       }
     });
     if (signal.aborted || page !== 'light-receive') release();
     else {
       lightReceiver = release;
+      if (pickupNonce) void readyTone(pickupPacket(lightId, pickupNonce), signal);
       hintAfterPause();
     }
   } catch (error) {
     if (current !== generation || signal.aborted) return;
     stopLight();
     el('light-start').hidden = false;
+    el('light-sound-help').hidden = false;
     el('light-label').textContent = error.name === 'NotAllowedError'
       ? 'Allow camera access in your browser, then try again.' : error.message;
   }
@@ -504,7 +514,7 @@ function openSoundListener(code = '') {
   el('sound-listen').disabled = false;
   el('sound-receive-progress').value = 0;
   el('sound-received').textContent = '';
-  el('sound-receive-status').textContent = code ? 'Kiosk code filled in. Tap Start listening.' : 'On the kiosk, choose Use sound instead to see the six digits.';
+  el('sound-receive-status').textContent = code ? 'Kiosk code filled in. Tap Start listening.' : 'On the kiosk, open Kiosk options and select Camera-free pickup by sound to see the six digits.';
   show('sound-receive');
 }
 
@@ -709,40 +719,15 @@ el('error-sound').addEventListener('click', () => {
 });
 el('sound-listen').addEventListener('click', () => runSound(false));
 el('sound-pin').addEventListener('keydown', event => { if (event.key === 'Enter') runSound(false); });
-function setHighSpeed(enabled) {
+el('light-mode').addEventListener('change', () => {
   if (!lightSender) return;
-  lightSender.setHighSpeed(enabled);
-  el('light-fast').setAttribute('aria-pressed', String(enabled));
-  el('light-fast').textContent = enabled ? 'Leave high speed' : 'High speed';
-  el('light-easy').disabled = enabled;
-  el('light-color').disabled = enabled || el('light-easy').getAttribute('aria-pressed') === 'true';
-  el('light-mode-note').textContent = enabled
-    ? 'Hold the phone steady and fill its camera view with the whole moving square. Changing speed restarts collection.'
-    : 'Previous speed restored. The phone will restart collection.';
-}
-el('light-fast').addEventListener('click', () => setHighSpeed(el('light-fast').getAttribute('aria-pressed') !== 'true'));
-el('light-color').addEventListener('click', () => {
-  if (!lightSender) return;
-  const enabled = el('light-color').getAttribute('aria-pressed') !== 'true';
-  lightSender.setColor(enabled);
-  el('light-color').setAttribute('aria-pressed', String(enabled));
-  el('light-color').textContent = enabled ? 'Use black and white' : 'Try four colors';
-  el('light-mode-note').textContent = enabled ? 'The phone can collect extra packets from color. You can switch back during pickup.' : 'Continuing in black and white.';
+  const mode = el('light-mode').value;
+  lightSender.setHighSpeed(mode === 'fast');
+  lightSender.setLargeSquares(mode === 'easy');
+  lightSender.setColor(mode === 'color');
+  el('light-mode-note').textContent = 'Changing square density restarts collection on the phone.';
 });
-el('light-easy').addEventListener('click', () => {
-  if (!lightSender) return;
-  const enabled = el('light-easy').getAttribute('aria-pressed') !== 'true';
-  lightSender.setLargeSquares(enabled);
-  el('light-easy').setAttribute('aria-pressed', String(enabled));
-  el('light-color').disabled = enabled;
-  if (enabled) {
-    lightSender.setColor(false);
-    el('light-color').setAttribute('aria-pressed', 'false');
-    el('light-color').textContent = 'Try four colors';
-  }
-  el('light-easy').textContent = enabled ? 'Use faster transfer' : 'Use larger squares';
-  el('light-mode-note').textContent = enabled ? 'Larger squares move more slowly. Your phone will restart collection.' : 'Faster transfer selected. Your phone will restart collection.';
-});
+el('light-expand').addEventListener('click', () => expandLight(true));
 el('light-zoom').addEventListener('click', () => expandLight(!document.documentElement.classList.contains('light-expanded')));
 el('error-retry').addEventListener('click', () => {
   if (retryMode === 'sound') return runSound(true);
@@ -811,7 +796,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7', '?8'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8', '?9'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }

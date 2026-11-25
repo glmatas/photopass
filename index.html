@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=7">
-  <script type="module" src="./app.js?v=8"></script>
+  <link rel="stylesheet" href="./style.css?v=9">
+  <script type="module" src="./app.js?v=9"></script>
 </head>
 <body>
   <header class="masthead">
@@ -71,47 +71,46 @@
     </section>
 
     <section class="screen light-send" id="light-send-panel" aria-labelledby="light-send-title" hidden>
-      <div class="light-send-head">
-        <h1 id="light-send-title">Get your photo</h1>
-        <p id="light-size" class="support-text"></p>
-      </div>
       <div class="light-layout">
-        <figure class="light-join-card">
-          <figcaption>
-            <h2>Scan to open</h2>
-            <p>Use your phone’s camera to open this link.</p>
-          </figcaption>
-          <canvas id="light-join" role="img" aria-label="Scan to open the photo receiver"></canvas>
-        </figure>
+        <div class="pickup-copy">
+          <h1 id="light-send-title">Get your photo</h1>
+          <p class="intro">Scan the code, open the link, and allow camera access. Keep your phone pointed here until your photo appears.</p>
+          <details id="light-options">
+            <summary>Kiosk options</summary>
+            <label for="light-mode">Transfer speed</label>
+            <select id="light-mode">
+              <option value="fast">High speed</option>
+              <option value="color">Four colors</option>
+              <option value="mono">Black and white</option>
+              <option value="easy">Larger squares</option>
+            </select>
+            <p id="light-mode-note" class="support-text" role="status"></p>
+            <button type="button" id="light-expand" class="reset-button">Enlarge square</button>
+            <button type="button" id="light-sound" class="reset-button">Camera-free pickup by sound</button>
+            <button type="button" id="light-direct" class="reset-button">Pair for direct transfer</button>
+            <p class="support-text">The kiosk microphone listens for a short ready tone. Pickup also works in silence.</p>
+            <p id="light-size" class="support-text"></p>
+          </details>
+        </div>
         <figure class="light-stream-card">
-          <figcaption>
-            <h2>Keep your camera here</h2>
-            <p>Once the link opens, point your phone at this moving square.</p>
-          </figcaption>
-          <canvas id="light-stream" role="img" aria-label="Moving code carrying the photo"></canvas>
-          <div class="light-stream-tools">
-            <button type="button" id="light-zoom" class="button secondary" aria-controls="light-stream" aria-pressed="false">Enlarge moving code</button>
-            <button type="button" id="light-easy" class="reset-button" aria-controls="light-stream" aria-pressed="false">Use larger squares</button>
-            <button type="button" id="light-color" class="reset-button" aria-controls="light-stream" aria-pressed="false">Try four colors</button>
-            <button type="button" id="light-fast" class="reset-button" aria-controls="light-stream" aria-pressed="false">High speed</button>
+          <figcaption id="pickup-state" role="status">Scan to open</figcaption>
+          <div class="pickup-target">
+            <canvas id="light-join" role="img" aria-label="Scan to open your photo"></canvas>
+            <canvas id="light-stream" role="img" aria-label="Moving square carrying your photo" hidden></canvas>
           </div>
-          <p id="light-mode-note" class="support-text" role="status"></p>
+          <button type="button" id="light-zoom" class="button secondary" aria-controls="light-stream" aria-pressed="false">Close enlarged view</button>
         </figure>
-      </div>
-      <div class="alternate-transfers">
-        <button type="button" id="light-direct" class="reset-button">Use direct transfer instead</button>
-        <button type="button" id="light-sound" class="reset-button">Use sound instead</button>
       </div>
     </section>
 
     <section class="screen light-receive" id="light-receive-panel" aria-labelledby="light-receive-title" hidden>
       <div class="light-receive-copy">
-        <h1 id="light-receive-title">Receive your photo</h1>
-        <p class="intro">Allow camera access, then keep all four corners of the kiosk’s moving square in view.</p>
-        <button type="button" id="light-start" class="button primary">Enable camera</button>
+        <h1 id="light-receive-title">Keep your phone here</h1>
+        <p class="intro">Allow camera access and keep the whole kiosk square in view. Your photo will appear here.</p>
+        <button type="button" id="light-start" class="button primary" hidden>Retry camera</button>
         <p id="light-label" class="support-text" role="status">Waiting for the camera…</p>
         <progress id="light-progress" max="100" value="0" aria-label="Photo received" aria-describedby="light-label"></progress>
-        <a class="receiver-link" href="#listen">Receive by sound</a>
+        <a id="light-sound-help" class="receiver-link" href="#listen" hidden>Receive by sound</a>
       </div>
       <div class="light-view">
         <video id="light-video" aria-label="Camera view of the kiosk’s moving square" playsinline muted autoplay></video>
