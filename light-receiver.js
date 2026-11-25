@@ -1,6 +1,7 @@
 import { LTDecoder, fnv1a, parseFrame, streamIdentity, unpackFile } from './vendor/optical/core.js';
 import { decodeQR } from './vendor/qr-codecs.js';
-import { restoreColor } from './light-color.js';
+import { restoreColor } from './light-color.js?v=7';
+import { highBlockBytes, RepairDecoder } from './light-repair.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const HEADER_BYTES = 49;
@@ -59,10 +60,12 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('This browser cannot read camera frames.');
   const workers = [];
-  let colorWorker, colorHeader, colorBusy = false, colorDisabled = false, nextColor = 0, colorFailures = 0;
+  let colorHeader, highColor = false;
+  const colors = [false, true].map(green => ({green, worker:null, busy:false, disabled:false, next:0, failures:0}));
   let stream, nextFrame, decoder, identity, verify = false, closed = false;
   let seq = 0, misses = 0, lastSeen = 0, lastTime = -1, lastProgress = 0;
   let cancelStartup;
+  let firstPacketAt;
   const stopped = new Promise((_, reject) => { cancelStartup = reject; });
   stopped.catch(() => {}); // A device API can throw before the first startup race.
   const usingVideoCallback = typeof video.requestVideoFrameCallback === 'function';
@@ -74,8 +77,8 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       nextFrame = undefined;
     }
     for (const worker of workers.splice(0)) worker.instance.terminate();
-    colorWorker?.terminate();
-    colorWorker = colorHeader = undefined;
+    for (const layer of colors) layer.worker?.terminate();
+    colorHeader = undefined;
     stream?.getTracks().forEach(track => track.stop());
     if (stream && video.srcObject === stream) {
       video.pause();
@@ -105,29 +108,43 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       if (closed) return;
       stop();
       onProgress?.(1);
-      onPhoto?.(blob, name);
+      onPhoto?.(blob, name, (performance.now() - firstPacketAt) / 1000);
     } catch (e) { fail(e); }
   }
-  function receive(bytes) {
+  function receive(bytes, highSpeed = false) {
     if (closed || verify || !bytes || bytes.length <= expected.length ||
         !expected.every((byte, i) => bytes[i] === byte)) return false;
-    const frame = parseFrame(bytes.subarray(expected.length));
+    let packet = bytes.subarray(expected.length);
+    if (packet[0] === 0x48 && packet[1] === 0x37) {
+      if (packet.length < 6) return false;
+      const check = new DataView(packet.buffer, packet.byteOffset).getUint32(2);
+      packet = packet.subarray(6);
+      if (fnv1a(packet) !== check) return false;
+      highSpeed = true;
+    }
+    const frame = parseFrame(packet);
     if (!frame) return false;
     const h = frame.header;
     if (h.sessionId !== sessionId || h.totalLen < HEADER_BYTES || h.totalLen > MAX_CONTAINER ||
         h.blockLen > 2953 - expected.length - 20 || h.k !== Math.ceil(h.totalLen / h.blockLen)) return false;
-    const key = streamIdentity(h), now = performance.now();
+    if (highSpeed && (h.blockLen !== Math.min(highBlockBytes, h.totalLen) || h.seq >>> 31 !== 1)) return false;
+    const key = (highSpeed ? 'H7/' : '') + streamIdentity(h), now = performance.now();
     if (key !== identity) {
       // Another kiosk is rejected by the complete id above. If the sender
       // changes symbol density for this photo, allow its new stream to take over.
       if (decoder && now - lastSeen < 1200) return false;
       identity = key;
-      decoder = new LTDecoder(h.k, h.blockLen, h.sessionId, h.totalLen);
+      firstPacketAt = now;
+      decoder = highSpeed ? new RepairDecoder(h.k, h.blockLen, h.totalLen)
+        : new LTDecoder(h.k, h.blockLen, h.sessionId, h.totalLen);
       lastProgress = 0;
       onProgress?.(0);
     }
     lastSeen = now;
-    if (h.seq >>> 30 !== 3) colorHeader = h.seq >>> 30 === 2 ? h : undefined;
+    if (h.seq >>> 30 !== 3) {
+      colorHeader = h.seq >>> 30 === 2 ? h : undefined;
+      highColor = highSpeed;
+    }
     decoder.addFrame(h.seq, frame.block);
     if (decoder.isComplete) {
       const payload = decoder.assemble();
@@ -164,30 +181,31 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     slot.discard = discard;
     workers.push(slot);
   }
-  function tryColor(pixels, w, h) {
-    if (!colorHeader || colorBusy || colorDisabled || seq < nextColor || performance.now() - lastSeen > 1200) return;
+  function tryColor(layer, pixels, w, h) {
+    if (!colorHeader || (layer.green && (!highColor || navigator.hardwareConcurrency <= 2)) ||
+        layer.busy || layer.disabled || seq < layer.next || performance.now() - lastSeen > 1200) return;
     const disable = () => {
-      colorWorker?.terminate();
-      colorWorker = undefined;
-      colorDisabled = true;
+      layer.worker?.terminate();
+      layer.worker = null;
+      layer.disabled = true;
     };
     try {
-      if (!colorWorker) {
-        colorWorker = new Worker(new URL('./vendor/optical/color-reader.js', import.meta.url), {type:'module'});
-        colorWorker.onerror = colorWorker.onmessageerror = disable;
-        colorWorker.onmessage = ({data}) => {
+      if (!layer.worker) {
+        layer.worker = new Worker(new URL('./vendor/optical/color-reader.js?v=7', import.meta.url), {type:'module'});
+        layer.worker.onerror = layer.worker.onmessageerror = disable;
+        layer.worker.onmessage = ({data}) => {
           if (data.id < 0 || closed || verify) return;
-          colorBusy = false;
-          const bytes = restoreColor(data.bytes, expected, colorHeader);
-          if (bytes && receive(bytes)) colorFailures = 0;
-          else colorFailures = Math.min(5, colorFailures + 1);
+          layer.busy = false;
+          const bytes = restoreColor(data.bytes, expected, colorHeader, highColor);
+          if (bytes && receive(bytes, highColor)) layer.failures = 0;
+          else layer.failures = Math.min(5, layer.failures + 1);
           const minimumGap = navigator.hardwareConcurrency <= 2 ? 4 : 1;
-          nextColor = seq + Math.max(minimumGap, 1 << colorFailures);
+          layer.next = seq + Math.max(minimumGap, 1 << layer.failures);
         };
       }
       const copy = pixels.slice();
-      colorBusy = true;
-      colorWorker.postMessage({id:seq, buf:copy.buffer, w, h}, [copy.buffer]);
+      layer.busy = true;
+      layer.worker.postMessage({id:seq, buf:copy.buffer, w, h, green:layer.green}, [copy.buffer]);
     } catch { disable(); }
   }
   function loop() {
@@ -217,7 +235,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       if (slot && !(misses >= 10 && seq % 10 === 0)) {
         slot.busy = true;
         slot.started = performance.now();
-        tryColor(pixels, w, h);
+        for (const layer of colors) tryColor(layer, pixels, w, h);
         slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h }, [pixels.buffer]);
       } else {
         // Some WebKit versions run module workers but cannot instantiate this

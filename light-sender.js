@@ -1,6 +1,7 @@
 import { fnv1a, HEADER_LEN, LTEncoder, packFile, packFrame } from './vendor/optical/core.js';
 import { createQR, rasterizeQr } from './vendor/optical/render.js';
-import { colorFlag, colorPacket, paintColor } from './light-color.js';
+import { colorFlag, colorPacket, paintColor } from './light-color.js?v=7';
+import { highBlockBytes, repairEncoder } from './light-repair.js';
 
 const maxFileBytes = 32 * 1024 * 1024;
 const idLength = 12;
@@ -30,21 +31,25 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   let encoder, header;
   let largeSquares = false;
   let color = false;
+  let highSpeed = false;
   const staging = document.createElement('canvas');
   const source = staging.getContext('2d', { alpha: false });
   const screen = canvas.getContext('2d', { alpha: false });
   if (!source || !screen) throw new Error('This browser could not display the optical transfer.');
   let sequence = 0;
+  let highSequence = 0;
   let version;
   let animation;
   let nextFrame = 0;
 
   function configure() {
-    const budget = (largeSquares ? largeSquareBytes : fastBytes) - idLength - HEADER_LEN;
+    const standardBudget = (largeSquares ? largeSquareBytes : fastBytes) - idLength - HEADER_LEN;
+    const budget = highSpeed ? highBlockBytes : standardBudget;
     // The wire's block count is a u16. Increase the block size just enough for
     // larger photos to work in large-square mode without truncating the count.
     const blockLen = Math.min(container.length, Math.max(budget, Math.ceil(container.length / 65535)));
-    encoder = new LTEncoder(container, blockLen, sessionId);
+    encoder = highSpeed ? repairEncoder(container, blockLen) : new LTEncoder(container, blockLen, sessionId);
+    highSequence = 0;
     header = { sessionId, k: encoder.k, blockLen, totalLen: container.length, payloadFnv: checksum };
     version = undefined;
   }
@@ -56,16 +61,28 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     configure();
     nextFrame = performance.now();
   }
+  function setHighSpeed(enabled) {
+    if (!container || highSpeed === enabled) return;
+    highSpeed = enabled;
+    configure();
+    nextFrame = performance.now();
+  }
 
   function draw() {
-    const boosted = color && !largeSquares;
-    const seq = (sequence++ & 0x3fffffff) + (boosted ? colorFlag : 0);
+    const boosted = highSpeed || (color && !largeSquares);
+    const seq = highSpeed ? colorFlag + (highSequence++ & 0x1fffffff)
+      : (sequence++ & 0x3fffffff) + (boosted ? colorFlag : 0);
     const frame = packFrame({ ...header, seq }, encoder.encode(seq));
-    const bytes = new Uint8Array(prefix.length + frame.length);
+    const extraHeader = highSpeed ? 6 : 0;
+    const bytes = new Uint8Array(prefix.length + extraHeader + frame.length);
     bytes.set(prefix);
-    bytes.set(frame, prefix.length);
+    if (highSpeed) {
+      bytes.set([0x48, 0x37], prefix.length);
+      new DataView(bytes.buffer).setUint32(prefix.length + 2, fnv1a(frame));
+    }
+    bytes.set(frame, prefix.length + extraHeader);
     // A fixed valid mask and version avoid eight full matrix evaluations on each tick.
-    const qr = createQR([{ data: bytes, mode: 'byte' }], { errorCorrectionLevel: largeSquares ? 'M' : 'L', maskPattern: 4, version });
+    const qr = createQR([{ data: bytes, mode: 'byte' }], { errorCorrectionLevel: largeSquares && !highSpeed ? 'M' : 'L', maskPattern: 4, version });
     const raster = rasterizeQr(qr.modules.size, qr.modules.data, margin);
     if (version === undefined) {
       version = qr.version;
@@ -78,9 +95,15 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     const pixels = new Uint8ClampedArray(raster.pixels.buffer);
     if (boosted) {
       const extraSeq = seq + 0x40000000;
-      const data = colorPacket(prefix, header, extraSeq, encoder.encode(extraSeq));
+      const data = colorPacket(prefix, header, extraSeq, encoder.encode(extraSeq), highSpeed);
       const extra = createQR([{data, mode:'byte'}], {errorCorrectionLevel:'L', maskPattern:4, version:qr.version});
-      paintColor(pixels, qr.modules, extra.modules, margin);
+      let third;
+      if (highSpeed) {
+        const thirdSeq = extraSeq + 0x20000000;
+        const data = colorPacket(prefix, header, thirdSeq, encoder.encode(thirdSeq), true);
+        third = createQR([{data, mode:'byte'}], {errorCorrectionLevel:'L', maskPattern:4, version:qr.version});
+      }
+      paintColor(pixels, qr.modules, extra.modules, margin, third?.modules);
     }
     source.putImageData(new ImageData(pixels, raster.size, raster.size), 0, 0);
     screen.drawImage(staging, 0, 0, canvas.width, canvas.height);
@@ -104,8 +127,8 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
       if (now >= nextFrame) {
         draw();
         // A late or resumed tab holds the current frame, never bursts missed ones.
-        const rate = largeSquares ? 12 : 24;
-        nextFrame = Math.max(nextFrame + 1000 / rate, now + (largeSquares ? 70 : 31));
+        const rate = highSpeed ? 30 : largeSquares ? 12 : 24;
+        nextFrame = Math.max(nextFrame + 1000 / rate, now + 750 / rate);
       }
       animation = requestAnimationFrame(tick);
     } catch (error) {
@@ -121,5 +144,5 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     nextFrame = performance.now();
     tick(nextFrame);
   }
-  return { id, start, stop, setLargeSquares, setColor(enabled) { color = Boolean(enabled); } };
+  return { id, start, stop, setLargeSquares, setHighSpeed, setColor(enabled) { color = Boolean(enabled); } };
 }

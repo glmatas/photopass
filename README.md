@@ -12,6 +12,12 @@ The short link identifies the visitor’s photo. Each moving frame carries part 
 
 ### Speed and lighting
 
+**High speed** is an optional setting for a close, steady phone camera. Select it before the visitor scans, or open the kiosk with `?fast` to use it for every visitor. Use **Enlarge moving code** when the squares are difficult to resolve. The phone reports elapsed time and KB/s after verifying the photo. Changing into or out of High speed restarts collection.
+
+High speed targets 30 frames/s, with up to three independently checked 2,915-byte packets per frame. Brightness, warm/cool tint and green/magenta tint carry different packets. Brightness alone can deliver the entire file. A receiver backs off a color layer that repeatedly fails. Groups of up to 48 source packets use a systematic Cauchy erasure code over GF(256). Any 48 distinct valid rows recover a full group, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
+
+The density and refresh choices draw on Decimen's version-40 QR guidance. HiQ documents how lighting and interference between colors affect phone decoding. PhotoPass checks each layer separately and retains whole-file SHA-256 verification. The high-speed packet format is specific to PhotoPass. [Decimen transmission settings](https://github.com/bashalarmistalt/decimen-optical-transfer/blob/main/docs/user/sending.md) · [HiQ mobile color QR research](https://arxiv.org/abs/1704.06447) · [Erasure coding background](https://www.rfc-editor.org/rfc/rfc5510)
+
 **Try four colors** adds a second packet to each moving frame at the normal square size and frame rate. Brightness carries a complete stream. Phones with a capable decoder can also read a warm/cool layer. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching back to black and white keeps the phone's collected packets. Use **Use larger squares** for cameras that have trouble resolving the grid.
 
 Allow several minutes for a 10 MB original. The standard setting can display up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.

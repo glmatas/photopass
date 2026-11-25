@@ -382,7 +382,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=6');
+    const { prepareLightSender } = await import('./light-sender.js?v=7');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -390,7 +390,7 @@ async function beginLight() {
     if (current !== generation) { transfer.stop(); return; }
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
-    url.search = '?3';
+    url.search = '?7';
     url.hash = lightHash(transfer.id);
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -401,9 +401,13 @@ async function beginLight() {
     el('light-color').disabled = false;
     el('light-color').setAttribute('aria-pressed', 'false');
     el('light-color').textContent = 'Try four colors';
+    el('light-easy').disabled = false;
+    el('light-fast').setAttribute('aria-pressed', 'false');
+    el('light-fast').textContent = 'High speed';
     el('light-mode-note').textContent = picked.size >= 2_000_000 ? 'Keep the phone in place. Large originals can take several minutes.' : '';
     el('status').textContent = '';
     show('light-send');
+    if (new URLSearchParams(location.search).has('fast')) setHighSpeed(true);
     transfer.start();
   } catch (error) {
     if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
@@ -426,14 +430,14 @@ async function readLight() {
   const hintAfterPause = () => {
     clearTimeout(hintTimer);
     hintTimer = setTimeout(() => {
-      if (!signal.aborted) el('light-label').textContent = 'Keep all four corners in view. If progress stalls, choose Use larger squares on the kiosk.';
+      if (!signal.aborted) el('light-label').textContent = 'Keep all four corners in view. If progress stalls, enlarge the moving code on the kiosk.';
     }, 10000);
   };
   signal.addEventListener('abort', () => clearTimeout(hintTimer), { once: true });
   el('light-start').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=6');
+    const { startLightReceiver } = await import('./light-receiver.js?v=7');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
@@ -454,10 +458,14 @@ async function readLight() {
         el('light-label').textContent = percent < 100 ? percent + '% received · ' + hint : 'Verifying the original photo…';
         hintAfterPause();
       },
-      onPhoto(blob, name) {
+      onPhoto(blob, name, seconds) {
         if (signal.aborted) return;
         stopLight();
         done(blob, name);
+        if (seconds >= 1) {
+          const rate = Math.round(blob.size / (1000 * seconds));
+          el('done-description').textContent = 'Received in ' + seconds.toFixed(1) + ' s (' + rate + ' KB/s). Save the original before closing this tab.';
+        }
       },
       onError(message) {
         if (signal.aborted) return;
@@ -701,6 +709,18 @@ el('error-sound').addEventListener('click', () => {
 });
 el('sound-listen').addEventListener('click', () => runSound(false));
 el('sound-pin').addEventListener('keydown', event => { if (event.key === 'Enter') runSound(false); });
+function setHighSpeed(enabled) {
+  if (!lightSender) return;
+  lightSender.setHighSpeed(enabled);
+  el('light-fast').setAttribute('aria-pressed', String(enabled));
+  el('light-fast').textContent = enabled ? 'Leave high speed' : 'High speed';
+  el('light-easy').disabled = enabled;
+  el('light-color').disabled = enabled || el('light-easy').getAttribute('aria-pressed') === 'true';
+  el('light-mode-note').textContent = enabled
+    ? 'Hold the phone steady and fill its camera view with the whole moving square. Changing speed restarts collection.'
+    : 'Previous speed restored. The phone will restart collection.';
+}
+el('light-fast').addEventListener('click', () => setHighSpeed(el('light-fast').getAttribute('aria-pressed') !== 'true'));
 el('light-color').addEventListener('click', () => {
   if (!lightSender) return;
   const enabled = el('light-color').getAttribute('aria-pressed') !== 'true';
@@ -791,7 +811,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3'].includes(location.search)) {
+  if (['?2', '?3', '?7'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }
