@@ -3,7 +3,7 @@ import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from
 import { openCapture, takePhoto } from './camera.js';
 
 const el = id => document.getElementById(id);
-const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive'];
+const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
 const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 let page = 'start';
 let role = 'kiosk';
@@ -27,13 +27,14 @@ let lightSender;
 let lightReceiver;
 let lightController;
 let lightId;
+let sound;
 let retryMode;
 let wakeLock;
 let wakePending = false;
 const preferDirect = new URLSearchParams(location.search).has('direct');
 
 async function updateScreenLock() {
-  const needsScreen = () => (page === 'light-send' || page === 'light-receive') && document.visibilityState === 'visible';
+  const needsScreen = () => (page.startsWith('light-') || (sound && page.startsWith('sound-'))) && document.visibilityState === 'visible';
   if (!needsScreen()) {
     const previous = wakeLock;
     wakeLock = undefined;
@@ -62,7 +63,7 @@ function show(name) {
   el('reset-button').hidden = name === 'start';
   let resetLabel = 'Start over';
   if (role === 'phone') resetLabel = 'Close session';
-  else if (name === 'done' || name === 'light-send') resetLabel = 'Next visitor';
+  else if (name === 'done' || name === 'light-send' || name === 'sound-send') resetLabel = 'Next visitor';
   else if (name === 'pairing' && capturedHere) resetLabel = 'Retake photo';
   el('reset-button').textContent = resetLabel;
 }
@@ -93,6 +94,15 @@ function stopLight() {
   lightController = undefined;
   lightReceiver?.();
   lightReceiver = undefined;
+}
+
+function stopSound() {
+  const active = sound;
+  if (!active) return;
+  sound = undefined;
+  active.controller.abort();
+  active.release?.();
+  if (active.context?.state !== 'closed') active.context?.close().catch(() => {});
 }
 
 function stopCapture() {
@@ -154,6 +164,7 @@ async function startCapture() {
 
 function cleanUp() {
   generation++;
+  stopSound();
   stopLight();
   stopCapture();
   stopScan();
@@ -190,7 +201,7 @@ function reset(clearLocation = true) {
   if (onPhone) {
     show('done');
     el('done-title').textContent = 'Session closed';
-    el('done-description').textContent = 'You can close this tab. Scan a new code at the kiosk for another photo.';
+    el('done-description').textContent = 'You can close this tab or start another pickup at the kiosk.';
     el('save-link').hidden = el('share-button').hidden = el('reset-button').hidden = true;
   } else {
     show('start');
@@ -200,6 +211,7 @@ function reset(clearLocation = true) {
 function fail(message, title = 'Transfer interrupted') {
   stopScan();
   stopLight();
+  stopSound();
   peer?.close();
   peer = undefined;
   generation++;
@@ -207,7 +219,8 @@ function fail(message, title = 'Transfer interrupted') {
   el('error-title').textContent = title;
   el('error-message').textContent = message;
   el('error-retry').hidden = role !== 'kiosk' || !picked;
-  el('error-retry').textContent = retryMode === 'direct' ? 'Retry with this photo' : 'Show pickup code again';
+  el('error-sound').hidden = role === 'kiosk' && (!picked || retryMode === 'sound');
+  el('error-retry').textContent = retryMode === 'light' ? 'Show pickup code again' : 'Retry with this photo';
   el('status').textContent = '';
 }
 
@@ -473,6 +486,107 @@ function openLight() {
   readLight();
 }
 
+function openSoundListener() {
+  role = 'phone';
+  el('sound-pin').value = '';
+  el('sound-pin').disabled = false;
+  el('sound-listen').disabled = false;
+  el('sound-receive-progress').value = 0;
+  el('sound-received').textContent = '';
+  el('sound-receive-status').textContent = 'On the kiosk, choose Use sound instead to see the six digits.';
+  show('sound-receive');
+}
+
+async function runSound(sending) {
+  if (sound || (sending && !picked)) return;
+  let code;
+  if (sending) {
+    stopLight();
+    retryMode = 'sound';
+    code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, '0');
+    el('sound-code').textContent = code.slice(0, 3) + ' ' + code.slice(3);
+    const address = new URL(receiverPage || location.href);
+    address.search = '?listen';
+    address.hash = '';
+    el('sound-address').href = address.href;
+    el('sound-address').textContent = address.host + address.pathname + address.search;
+    // Approximate end-to-end rate observed in the software audio loopback.
+    const minutes = Math.ceil(picked.size / (450 * 60));
+    el('sound-time').textContent = minutes >= 2
+      ? 'If the entire photo travels by sound, allow roughly ' + minutes + ' minutes for this file. Room noise can add time.'
+      : 'The devices try a direct connection first. If that fails, the photo travels by sound.';
+  } else {
+    code = el('sound-pin').value.replace(/[ -]/g, '');
+    if (!/^\d{6}$/.test(code)) {
+      el('sound-receive-status').textContent = 'Enter all six digits from the kiosk.';
+      el('sound-pin').focus();
+      return;
+    }
+    el('sound-pin').disabled = el('sound-listen').disabled = true;
+  }
+  const side = sending ? 'sound-send' : 'sound-receive';
+  const status = el(side + '-status');
+  const meter = el(side + '-progress');
+  if (sending) meter.removeAttribute('value');
+  else {
+    meter.value = 0;
+    el('sound-received').textContent = '';
+  }
+  let firstProgress;
+  const active = {controller:new AbortController()};
+  sound = active;
+  show(side);
+  status.textContent = sending ? 'Opening sound. Allow the microphone for two-way pairing.' : 'Opening the microphone. Keep this phone near the kiosk speaker.';
+  function failed(message) {
+    if (sound !== active) return;
+    stopSound();
+    if (sending) fail(message, 'Couldn’t start sound pickup');
+    else {
+      status.textContent = message;
+      el('sound-listen').disabled = el('sound-pin').disabled = false;
+    }
+  }
+  try {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) throw new Error('This browser cannot use sound pickup. Open the page in Safari, Chrome or Firefox.');
+    // Resume in the user's click, before loading codecs; mobile browsers require this gesture.
+    active.context = new Context();
+    const resume = active.context.resume();
+    const [, transport] = await Promise.all([resume, import('./sound-transfer.js?v=4')]);
+    if (sound !== active) return;
+    const options = {
+      code,
+      context: active.context,
+      signal: active.controller.signal,
+      onStatus(message) { if (sound === active) status.textContent = message; },
+      onProgress(fraction) {
+        if (sound !== active) return;
+        const percent = Math.min(100, Math.max(0, Math.floor(fraction * 100)));
+        meter.value = percent;
+        if (!sending) {
+          const now = performance.now();
+          if (!firstProgress || fraction < firstProgress.fraction) firstProgress = {fraction, time: now};
+          const gain = fraction - firstProgress.fraction;
+          let text = percent + '% received';
+          if (now - firstProgress.time > 15000 && gain > 0.005 && percent < 99) {
+            const minutes = Math.ceil((now - firstProgress.time) * (1 - fraction) / (gain * 60000));
+            text += ' · About ' + minutes + (minutes === 1 ? ' minute' : ' minutes') + ' left';
+          }
+          el('sound-received').textContent = text;
+        }
+      },
+      onSent() { if (sound === active) { stopSound(); done(); } },
+      onPhoto(blob, filename) { if (sound === active) { stopSound(); done(blob, filename); } },
+      onError: failed
+    };
+    const release = sending ? await transport.startSoundSender(picked, options) : await transport.startSoundReceiver(options);
+    if (sound === active) active.release = release;
+    else release?.();
+  } catch (error) {
+    failed(error.message || 'Sound pickup could not start. Check microphone access and try again.');
+  }
+}
+
 // A photo booth embedding this page can pass the File produced by its camera.
 export async function startPhotoSession(file, { receiverURL } = {}) {
   if (role !== 'kiosk') throw new Error('Open the kiosk page to start a photo session.');
@@ -566,6 +680,14 @@ el('retake-button').addEventListener('click', () => {
 el('start-button').addEventListener('click', begin);
 el('light-start').addEventListener('click', readLight);
 el('light-direct').addEventListener('click', beginDirect);
+el('light-sound').addEventListener('click', () => runSound(true));
+el('sound-back').addEventListener('click', () => { stopSound(); beginLight(); });
+el('error-sound').addEventListener('click', () => {
+  if (role === 'phone') location.hash = 'listen';
+  else runSound(true);
+});
+el('sound-listen').addEventListener('click', () => runSound(false));
+el('sound-pin').addEventListener('keydown', event => { if (event.key === 'Enter') runSound(false); });
 el('light-easy').addEventListener('click', () => {
   if (!lightSender) return;
   const enabled = el('light-easy').getAttribute('aria-pressed') !== 'true';
@@ -575,7 +697,11 @@ el('light-easy').addEventListener('click', () => {
   el('light-mode-note').textContent = enabled ? 'Larger squares move more slowly. Your phone will restart collection.' : 'Faster transfer selected. Your phone will restart collection.';
 });
 el('light-zoom').addEventListener('click', () => expandLight(!document.documentElement.classList.contains('light-expanded')));
-el('error-retry').addEventListener('click', () => retryMode === 'direct' ? beginDirect() : beginLight());
+el('error-retry').addEventListener('click', () => {
+  if (retryMode === 'sound') return runSound(true);
+  if (retryMode === 'direct') return beginDirect();
+  return beginLight();
+});
 el('reset-button').addEventListener('click', () => {
   reset();
   if (role === 'kiosk') startCapture();
@@ -632,6 +758,7 @@ window.addEventListener('pagehide', cleanUp);
 document.addEventListener('visibilitychange', updateScreenLock);
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
 function enterRoute() {
+  if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
   if (['?2', '?3'].includes(location.search)) {

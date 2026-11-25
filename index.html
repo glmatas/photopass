@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=3">
-  <script type="module" src="./app.js?v=3"></script>
+  <link rel="stylesheet" href="./style.css?v=4">
+  <script type="module" src="./app.js?v=4"></script>
 </head>
 <body>
   <header class="masthead">
@@ -46,6 +46,7 @@
             </label>
             <span id="file-label" class="file-meta">JPEG, PNG or WebP · Up to 32 MiB</span>
           </div>
+          <a class="receiver-link" href="#listen">Receive by sound</a>
         </div>
       </div>
       <div class="photo-stage">
@@ -95,7 +96,10 @@
           <p id="light-mode-note" class="support-text" role="status"></p>
         </figure>
       </div>
-      <button type="button" id="light-direct" class="reset-button">Use direct transfer instead</button>
+      <div class="alternate-transfers">
+        <button type="button" id="light-direct" class="reset-button">Use direct transfer instead</button>
+        <button type="button" id="light-sound" class="reset-button">Use sound instead</button>
+      </div>
     </section>
 
     <section class="screen light-receive" id="light-receive-panel" aria-labelledby="light-receive-title" hidden>
@@ -105,11 +109,45 @@
         <button type="button" id="light-start" class="button primary">Enable camera</button>
         <p id="light-label" class="support-text" role="status">Waiting for the camera…</p>
         <progress id="light-progress" max="100" value="0" aria-label="Photo received" aria-describedby="light-label"></progress>
+        <a class="receiver-link" href="#listen">Receive by sound</a>
       </div>
       <div class="light-view">
         <video id="light-video" aria-label="Camera view of the kiosk’s moving square" playsinline muted autoplay></video>
         <span class="capture-guide" aria-hidden="true"></span>
       </div>
+    </section>
+
+    <section class="screen sound-screen" id="sound-send-panel" aria-labelledby="sound-send-title" hidden>
+      <div class="sound-intro">
+        <h1 id="sound-send-title">Send by sound</h1>
+        <p class="intro">On your phone, open the address below and enter the six-digit code.</p>
+        <a id="sound-address" class="sound-address" href="?listen">Open the sound receiver</a>
+        <div class="sound-pickup">
+          <span class="sound-caption" id="sound-code-label">Kiosk code</span>
+          <output id="sound-code" aria-labelledby="sound-code-label"></output>
+        </div>
+      </div>
+      <div class="sound-status-card">
+        <h2>Kiosk speaker</h2>
+        <p>Set a comfortable volume and hold your phone near the speaker until it finishes receiving.</p>
+        <p id="sound-time"></p>
+        <p id="sound-send-status" class="support-text" role="status">Preparing the sound transfer…</p>
+        <progress id="sound-send-progress" value="0" max="100" aria-label="Sound playback progress" aria-describedby="sound-send-status"></progress>
+        <button type="button" id="sound-back" class="reset-button">Return to moving code</button>
+      </div>
+    </section>
+
+    <section class="screen single-screen" id="sound-receive-panel" aria-labelledby="sound-receive-title" hidden>
+      <h1 id="sound-receive-title">Receive by sound</h1>
+      <p class="intro">Enter the kiosk code, allow microphone access, and keep your phone near the kiosk speaker.</p>
+      <div class="sound-input-group">
+        <label for="sound-pin">Six-digit kiosk code</label>
+        <input id="sound-pin" type="text" inputmode="numeric" minlength="6" maxlength="6" pattern="[0-9]{6}" placeholder="000000" autocomplete="off" autocapitalize="none" spellcheck="false">
+        <button type="button" id="sound-listen" class="button primary">Start listening</button>
+      </div>
+      <p id="sound-receive-status" class="support-text" role="status"></p>
+      <progress id="sound-receive-progress" value="0" max="100" aria-label="Photo received by sound" aria-describedby="sound-receive-status"></progress>
+      <p id="sound-received" class="support-text"></p>
     </section>
 
     <section class="screen pair-screen" id="pairing-panel" aria-labelledby="pair-title" hidden>
@@ -166,6 +204,7 @@
       <h1 id="error-title">Transfer interrupted</h1>
       <p id="error-message" class="intro" role="alert"></p>
       <button type="button" id="error-retry" class="button primary" hidden>Try again</button>
+      <button type="button" id="error-sound" class="reset-button" hidden>Use sound instead</button>
     </section>
 
     <div class="session-footer">

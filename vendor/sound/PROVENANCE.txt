@@ -1,0 +1,31 @@
+Quiet browser codec
+
+The following are unmodified files from quiet/quiet-js commit
+72782542a41f1b615a02c2ab43a0edb56edb6ce4 (BSD-3-Clause).
+https://github.com/quiet/quiet-js/tree/72782542a41f1b615a02c2ab43a0edb56edb6ce4
+
+SHA-256
+57393f3f96e724ac6b45167c049660dffd96916e0100c587dd9c7b4301ad5527  quiet-emscripten.js
+ceabdfd9a9a3e9780466934da2a38b2df82e21a95148fc7e16c8cf05e077a7a7  quiet-emscripten.js.mem
+44ff44061577fd473565c702fb5dda0624c1fb4f2d16fc63a60e0d6fa1b7e6bf  quiet-profiles.json
+
+LICENSE and LICENSE-3RD-PARTY are copied verbatim from the same upstream
+checkout. They include the Quiet, liquid-dsp, Emscripten and Jansson terms.
+The compiled JavaScript uses asm.js with its external .mem data file.
+
+Forward error correction
+
+This binary incorporates quiet/libcorrect's BSD-3-Clause compatibility shim.
+For example, the generated init_rs_char function checks 8-bit symbols and
+initializes the 28-byte reed_solomon_shim with its padded length, message
+length, decoder object and two scratch buffers, as in:
+https://github.com/quiet/libcorrect/blob/f5a28c74fba7a99736fe49d3a5243eca29517ae9/src/fec_shim.c
+LICENSE-libcorrect contains that project's copyright and full license.
+The pinned release's older README also discusses dynamically loading Phil
+Karn's LGPL libfec.js. PhotoPass does not distribute or load that library.
+
+PhotoPass supplies modem-worker.js, capture-worklet.js and sound-modem.js.
+They select audible-7k-channel-0 at 9,200 Hz with CRC-32, rate-1/2
+constraint-length-9 convolutional coding and outer Reed–Solomon coding, raise
+the permitted binary packet size to 1,200 bytes, normalize speaker output and
+precede each burst with a tapered 40 ms tone to wake the audio route.

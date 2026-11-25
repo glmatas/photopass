@@ -1,6 +1,6 @@
 # PhotoPass
 
-PhotoPass delivers the original kiosk photo to a phone through its camera. The visitor opens a short pickup link and keeps the phone pointed at the moving square while the file arrives. Both devices can load the interface from the same static GitHub Pages site. The default transfer works across networks that block WebRTC.
+PhotoPass delivers the original kiosk photo to a phone. By default, the visitor opens a short pickup link and keeps the phone camera pointed at a moving square while the file arrives. Both devices can load the interface from the same static GitHub Pages site. A camera-free pickup uses the kiosk speaker and the phone microphone.
 
 ## Pick up a photo
 
@@ -36,6 +36,14 @@ The capture handler runs in a page with the PhotoPass interface. Omit the option
 ## Optional direct transfer
 
 For faster delivery on networks that permit a direct WebRTC connection, select **Use direct transfer instead** on the kiosk, or open the kiosk page with `?direct`. In this mode, scan the kiosk QR and turn the phone’s reply code toward the kiosk camera. The kiosk scans the reply automatically after a camera capture. The browsers use public STUN to discover network addresses and transfer the file over an encrypted data channel. A restrictive venue or carrier network can still prevent this connection. Screen transfer works independently of STUN and TURN. [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections)
+
+## Camera-free pickup by sound
+
+1. On the kiosk, take a photo or choose an existing file, then select **Use sound instead** below the moving square. Turn on the kiosk speaker. Allow the kiosk microphone if available so it can hear the phone's reply.
+2. On the phone, open the sound receiver address shown on the kiosk, or choose **Receive by sound** on the home page. Enter the six digits, tap **Start listening**, allow microphone access and hold the phone near the speaker. Keep both pages open. [Open the sound receiver](https://glmatas.github.io/photopass/?listen)
+3. The browsers exchange short tones and try a direct WebRTC transfer. When the network blocks the connection or the kiosk has no microphone, the kiosk speaker can send the complete original. Tap **Save photo** on the phone after verification. A one-way kiosk can keep playing until you select **Next visitor**.
+
+The audio link uses Quiet's audible modem. In digital loopback a 1,024-byte packet occupies about 1.2 seconds. At that rate, 2.3 MB needs about 45 minutes of continuous audio before framing, recovery blocks, listening pauses and missed packets. Allow an hour or more for a photo of that size over sound alone. For a large photo, leave the moving square selected when a camera is available. Ambient noise and overlapping kiosks can interfere with reception. Each sound session uses a six-digit pickup code and a random session identifier. Someone who can record the acoustic file stream can recover the photo. The upstream revision and licenses are in `vendor/sound/`. [Quiet.js](https://github.com/quiet/quiet-js)
 
 ## Publish or run locally
 
