@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f7f2">
+  <title>PhotoPass · Direct photo transfer</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand" aria-label="PhotoPass">
+        <span class="brand-icon" aria-hidden="true"></span>
+        <span>PhotoPass<span class="brand-dot" aria-hidden="true">.</span></span>
+      </div>
+      <span class="wordmark-caption">Device to device</span>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="screen start-screen" id="start-panel" aria-labelledby="start-title">
+      <div class="start-copy">
+        <h1 id="start-title">Send a<br><em>photo.</em></h1>
+        <p class="intro">Choose a photo, then pair a phone to save the original.</p>
+        <div class="choose-file">
+          <label for="file-input" class="file-picker">
+            <span class="file-icon" aria-hidden="true"></span>
+            <span>Choose photo</span>
+            <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp">
+          </label>
+          <span id="file-label" class="file-meta">JPEG, PNG or WebP · Up to 32 MiB</span>
+        </div>
+        <button type="button" id="start-button" class="button primary arrow" disabled>Pair a phone</button>
+      </div>
+      <div class="photo-stage">
+        <div class="stage-backdrop" aria-hidden="true"></div>
+        <figure class="camera-print" aria-hidden="true">
+          <div class="print-field">
+            <div class="camera-art">
+              <span class="camera-shutter"></span>
+              <span class="camera-viewfinder"></span>
+              <span class="camera-glint"></span>
+              <span class="camera-lens"></span>
+            </div>
+            <span class="flash-mark"></span>
+          </div>
+          <span class="print-stripe"></span>
+        </figure>
+        <img id="preview" class="image-preview" alt="Selected photo" hidden>
+        <i class="crop tl" aria-hidden="true"></i><i class="crop tr" aria-hidden="true"></i>
+        <i class="crop bl" aria-hidden="true"></i><i class="crop br" aria-hidden="true"></i>
+      </div>
+    </section>
+
+    <section class="screen pair-screen" id="pairing-panel" aria-labelledby="pair-title" hidden>
+      <div class="pair-copy">
+        <h1 id="pair-title">Pair your phone</h1>
+        <p id="pair-instructions" class="intro">Scan the code with your phone’s camera.</p>
+        <button type="button" id="scan-button" class="button primary">Scan phone’s reply</button>
+        <p id="scan-status" class="support-text" role="status"></p>
+        <video id="scanner" aria-label="Live camera view for scanning the reply code" playsinline muted hidden></video>
+      </div>
+      <div class="code-area">
+        <canvas id="pair-qr" role="img" aria-label="Device pairing QR code"></canvas>
+      </div>
+      <details id="manual-tools" class="manual-tools">
+        <summary>Pair using text</summary>
+        <div class="manual-fields">
+          <label for="pair-text">This device’s pairing text</label>
+          <textarea id="pair-text" rows="3" spellcheck="false" readonly></textarea>
+          <button type="button" id="copy-button" class="button secondary">Copy text</button>
+          <label for="manual-input">Other device’s pairing text</label>
+          <textarea id="manual-input" rows="3" spellcheck="false" autocapitalize="none" autocomplete="off"></textarea>
+          <button type="button" id="manual-apply" class="button secondary">Use pairing text</button>
+        </div>
+      </details>
+    </section>
+
+    <section class="screen single-screen" id="transfer-panel" aria-labelledby="transfer-title" hidden>
+      <h1 id="transfer-title">Sending photo</h1>
+      <p id="progress-label" class="intro" aria-live="polite">Preparing the transfer…</p>
+      <progress id="progress" value="0" max="100" aria-labelledby="transfer-title" aria-describedby="progress-label"></progress>
+    </section>
+
+    <section class="screen single-screen" id="done-panel" aria-labelledby="done-title" hidden>
+      <h1 id="done-title">Photo ready</h1>
+      <p id="done-description" class="intro"></p>
+      <img id="received-image" class="received-image" alt="Received photo" hidden>
+      <div class="button-row">
+        <a id="save-link" class="button primary arrow" download hidden>Save photo</a>
+        <button type="button" id="share-button" class="button secondary" hidden>Share photo</button>
+      </div>
+    </section>
+
+    <section class="screen single-screen" id="error-panel" aria-labelledby="error-title" hidden>
+      <h1 id="error-title">Transfer interrupted</h1>
+      <p id="error-message" class="intro" role="alert"></p>
+    </section>
+
+    <div class="session-footer">
+      <p id="status" class="support-text" role="status" aria-live="polite"></p>
+      <button type="button" id="reset-button" class="reset-button" hidden>Start over</button>
+    </div>
+  </main>
+</body>
+</html>
