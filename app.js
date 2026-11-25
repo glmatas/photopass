@@ -382,7 +382,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=3');
+    const { prepareLightSender } = await import('./light-sender.js?v=6');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -398,6 +398,9 @@ async function beginLight() {
     el('light-size').textContent = capturedHere ? size : picked.name + ' · ' + size;
     el('light-easy').setAttribute('aria-pressed', 'false');
     el('light-easy').textContent = 'Use larger squares';
+    el('light-color').disabled = false;
+    el('light-color').setAttribute('aria-pressed', 'false');
+    el('light-color').textContent = 'Try four colors';
     el('light-mode-note').textContent = picked.size >= 2_000_000 ? 'Keep the phone in place. Large originals can take several minutes.' : '';
     el('status').textContent = '';
     show('light-send');
@@ -430,7 +433,7 @@ async function readLight() {
   el('light-start').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=3');
+    const { startLightReceiver } = await import('./light-receiver.js?v=6');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
@@ -698,11 +701,25 @@ el('error-sound').addEventListener('click', () => {
 });
 el('sound-listen').addEventListener('click', () => runSound(false));
 el('sound-pin').addEventListener('keydown', event => { if (event.key === 'Enter') runSound(false); });
+el('light-color').addEventListener('click', () => {
+  if (!lightSender) return;
+  const enabled = el('light-color').getAttribute('aria-pressed') !== 'true';
+  lightSender.setColor(enabled);
+  el('light-color').setAttribute('aria-pressed', String(enabled));
+  el('light-color').textContent = enabled ? 'Use black and white' : 'Try four colors';
+  el('light-mode-note').textContent = enabled ? 'The phone can collect extra packets from color. You can switch back during pickup.' : 'Continuing in black and white.';
+});
 el('light-easy').addEventListener('click', () => {
   if (!lightSender) return;
   const enabled = el('light-easy').getAttribute('aria-pressed') !== 'true';
   lightSender.setLargeSquares(enabled);
   el('light-easy').setAttribute('aria-pressed', String(enabled));
+  el('light-color').disabled = enabled;
+  if (enabled) {
+    lightSender.setColor(false);
+    el('light-color').setAttribute('aria-pressed', 'false');
+    el('light-color').textContent = 'Try four colors';
+  }
   el('light-easy').textContent = enabled ? 'Use faster transfer' : 'Use larger squares';
   el('light-mode-note').textContent = enabled ? 'Larger squares move more slowly. Your phone will restart collection.' : 'Faster transfer selected. Your phone will restart collection.';
 });

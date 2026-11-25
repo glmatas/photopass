@@ -1,5 +1,6 @@
 import { fnv1a, HEADER_LEN, LTEncoder, packFile, packFrame } from './vendor/optical/core.js';
 import { createQR, rasterizeQr } from './vendor/optical/render.js';
+import { colorFlag, colorPacket, paintColor } from './light-color.js';
 
 const maxFileBytes = 32 * 1024 * 1024;
 const idLength = 12;
@@ -28,6 +29,7 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   const checksum = fnv1a(container);
   let encoder, header;
   let largeSquares = false;
+  let color = false;
   const staging = document.createElement('canvas');
   const source = staging.getContext('2d', { alpha: false });
   const screen = canvas.getContext('2d', { alpha: false });
@@ -56,7 +58,8 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   }
 
   function draw() {
-    const seq = sequence++ >>> 0;
+    const boosted = color && !largeSquares;
+    const seq = (sequence++ & 0x3fffffff) + (boosted ? colorFlag : 0);
     const frame = packFrame({ ...header, seq }, encoder.encode(seq));
     const bytes = new Uint8Array(prefix.length + frame.length);
     bytes.set(prefix);
@@ -72,7 +75,14 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
       canvas.style.setProperty('--qr-step', raster.size / (window.devicePixelRatio || 1) + 'px');
       screen.imageSmoothingEnabled = false;
     }
-    source.putImageData(new ImageData(new Uint8ClampedArray(raster.pixels.buffer), raster.size, raster.size), 0, 0);
+    const pixels = new Uint8ClampedArray(raster.pixels.buffer);
+    if (boosted) {
+      const extraSeq = seq + 0x40000000;
+      const data = colorPacket(prefix, header, extraSeq, encoder.encode(extraSeq));
+      const extra = createQR([{data, mode:'byte'}], {errorCorrectionLevel:'L', maskPattern:4, version:qr.version});
+      paintColor(pixels, qr.modules, extra.modules, margin);
+    }
+    source.putImageData(new ImageData(pixels, raster.size, raster.size), 0, 0);
     screen.drawImage(staging, 0, 0, canvas.width, canvas.height);
   }
 
@@ -111,5 +121,5 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     nextFrame = performance.now();
     tick(nextFrame);
   }
-  return { id, start, stop, setLargeSquares };
+  return { id, start, stop, setLargeSquares, setColor(enabled) { color = Boolean(enabled); } };
 }

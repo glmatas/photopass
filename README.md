@@ -12,6 +12,8 @@ The short link identifies the visitor’s photo. Each moving frame carries part 
 
 ### Speed and lighting
 
+**Try four colors** adds a second packet to each moving frame at the normal square size and frame rate. Brightness carries a complete stream. Phones with a capable decoder can also read a warm/cool layer. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching back to black and white keeps the phone's collected packets. Use **Use larger squares** for cameras that have trouble resolving the grid.
+
 Allow several minutes for a 10 MB original. The standard setting can display up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
 
 **Enlarge moving code** fills more of the screen. Keep all four corners in view. **Use larger squares** also reduces the density and speed of the frames for cameras that struggle to focus. Changing square size restarts collection of the same photo. Keep both screens open until the phone shows the save button.

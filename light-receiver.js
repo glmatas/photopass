@@ -1,5 +1,6 @@
 import { LTDecoder, fnv1a, parseFrame, streamIdentity, unpackFile } from './vendor/optical/core.js';
 import { decodeQR } from './vendor/qr-codecs.js';
+import { restoreColor } from './light-color.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const HEADER_BYTES = 49;
@@ -58,6 +59,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('This browser cannot read camera frames.');
   const workers = [];
+  let colorWorker, colorHeader, colorBusy = false, colorDisabled = false, nextColor = 0, colorFailures = 0;
   let stream, nextFrame, decoder, identity, verify = false, closed = false;
   let seq = 0, misses = 0, lastSeen = 0, lastTime = -1, lastProgress = 0;
   let cancelStartup;
@@ -72,6 +74,8 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       nextFrame = undefined;
     }
     for (const worker of workers.splice(0)) worker.instance.terminate();
+    colorWorker?.terminate();
+    colorWorker = colorHeader = undefined;
     stream?.getTracks().forEach(track => track.stop());
     if (stream && video.srcObject === stream) {
       video.pause();
@@ -123,6 +127,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       onProgress?.(0);
     }
     lastSeen = now;
+    if (h.seq >>> 30 !== 3) colorHeader = h.seq >>> 30 === 2 ? h : undefined;
     decoder.addFrame(h.seq, frame.block);
     if (decoder.isComplete) {
       const payload = decoder.assemble();
@@ -159,6 +164,32 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     slot.discard = discard;
     workers.push(slot);
   }
+  function tryColor(pixels, w, h) {
+    if (!colorHeader || colorBusy || colorDisabled || seq < nextColor || performance.now() - lastSeen > 1200) return;
+    const disable = () => {
+      colorWorker?.terminate();
+      colorWorker = undefined;
+      colorDisabled = true;
+    };
+    try {
+      if (!colorWorker) {
+        colorWorker = new Worker(new URL('./vendor/optical/color-reader.js', import.meta.url), {type:'module'});
+        colorWorker.onerror = colorWorker.onmessageerror = disable;
+        colorWorker.onmessage = ({data}) => {
+          if (data.id < 0 || closed || verify) return;
+          colorBusy = false;
+          const bytes = restoreColor(data.bytes, expected, colorHeader);
+          if (bytes && receive(bytes)) colorFailures = 0;
+          else colorFailures = Math.min(5, colorFailures + 1);
+          const minimumGap = navigator.hardwareConcurrency <= 2 ? 4 : 1;
+          nextColor = seq + Math.max(minimumGap, 1 << colorFailures);
+        };
+      }
+      const copy = pixels.slice();
+      colorBusy = true;
+      colorWorker.postMessage({id:seq, buf:copy.buffer, w, h}, [copy.buffer]);
+    } catch { disable(); }
+  }
   function loop() {
     if (closed || verify) return;
     nextFrame = usingVideoCallback ? video.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
@@ -186,6 +217,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       if (slot && !(misses >= 10 && seq % 10 === 0)) {
         slot.busy = true;
         slot.started = performance.now();
+        tryColor(pixels, w, h);
         slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h }, [pixels.buffer]);
       } else {
         // Some WebKit versions run module workers but cannot instantiate this
