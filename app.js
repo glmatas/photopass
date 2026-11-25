@@ -380,7 +380,9 @@ async function beginLight() {
     url.search = '?3';
     url.hash = lightHash(transfer.id);
     drawCode(el('light-join'), url.href);
-    el('light-size').textContent = picked.name + ' · ' + (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
+    const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
+      : (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
+    el('light-size').textContent = capturedHere ? size : picked.name + ' · ' + size;
     el('light-easy').setAttribute('aria-pressed', 'false');
     el('light-easy').textContent = 'Use larger squares';
     el('light-mode-note').textContent = picked.size >= 2_000_000 ? 'Keep the phone in place. Large originals can take several minutes.' : '';

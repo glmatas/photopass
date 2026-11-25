@@ -485,7 +485,7 @@ progress::-moz-progress-bar { border-radius: 8px; background: var(--green); }
   image-rendering: pixelated;
   forced-color-adjust: none;
 }
-#light-join { --qr-fit: min(100%, 235px); }
+#light-join { --qr-fit: min(100%, 360px); justify-self: center; }
 #light-stream { --qr-fit: min(100%, max(240px, calc(100vh - 265px))); }
 @supports (width: round(down, 12px, 3px)) {
   .light-layout canvas {
@@ -590,9 +590,9 @@ progress::-moz-progress-bar { border-radius: 8px; background: var(--green); }
   .light-send-head { margin-bottom: 12px; }
   .light-send-head h1, .light-receive h1 { font-size: clamp(36px, 9.7vw, 54px); }
   .light-layout, .light-receive { grid-template-columns: minmax(0, 1fr); gap: 18px; }
-  .light-join-card { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+  .light-join-card { grid-template-columns: minmax(0, 1fr); align-items: center; gap: 10px; }
   .light-join-card figcaption { margin-bottom: 0; }
-  #light-join { --qr-fit: clamp(105px, 28vw, 168px); }
+  #light-join { --qr-fit: min(100%, clamp(205px, 65vw, 360px)); }
   .light-stream-card { text-align: left; }
   .light-stream-card figcaption { align-self: stretch; }
   #light-stream { --qr-fit: min(calc(100vw - 8px), 600px); }
