@@ -1,7 +1,7 @@
 Decimen Optical Transfer v0.3.0, commit 29cba8fa25dd160c8b6aa18fe3b48fbc5bde2e36
 https://github.com/bashalarmistalt/decimen-optical-transfer/tree/v0.3.0
 core.js contains selected protocol and fountain functions. render.js contains the QR rasterizer.
-reader-worker.js is from the v0.3.0 release, modified to resolve the decoder exclusively beside the worker. The matching reader WASM is unmodified.
+reader-worker.js is from the v0.3.0 release. PhotoPass resolves the decoder beside the worker, can return the decoded QR corners and source pixels, and accepts pre-sampled QR grids. The matching reader WASM is unmodified.
 MIT License
 
 Copyright (c) 2026 Evan Crawley (Bash Alarmist)

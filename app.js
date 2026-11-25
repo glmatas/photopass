@@ -382,7 +382,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=7');
+    const { prepareLightSender } = await import('./light-sender.js?v=8');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -390,7 +390,7 @@ async function beginLight() {
     if (current !== generation) { transfer.stop(); return; }
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
-    url.search = '?7';
+    url.search = '?8';
     url.hash = lightHash(transfer.id);
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -437,7 +437,7 @@ async function readLight() {
   el('light-start').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=7');
+    const { startLightReceiver } = await import('./light-receiver.js?v=8');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
@@ -811,7 +811,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }

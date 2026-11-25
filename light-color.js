@@ -6,8 +6,8 @@ const extraHeader = 8;
 const palette = [[255,226,181], [180,230,255], [106,45,17], [14,51,112]];
 // Brightness, red-vs-blue, and green-vs-magenta can be read independently.
 const fastPalette = Array.from({length:8}, (_, index) => {
-  const level = index & 4 ? 60 : 194;
-  const warm = index & 2 ? -35 : 35, green = index & 1 ? -22 : 22;
+  const level = index & 4 ? 68 : 187;
+  const warm = index & 2 ? -49 : 49, green = index & 1 ? -32 : 32;
   return [level + warm - green / 2, level + green, level - warm - green / 2];
 });
 

@@ -16,7 +16,18 @@ The short link identifies the visitor’s photo. Each moving frame carries part 
 
 High speed targets 30 frames/s, with up to three independently checked 2,915-byte packets per frame. Brightness, warm/cool tint and green/magenta tint carry different packets. Brightness alone can deliver the entire file. A receiver backs off a color layer that repeatedly fails. Groups of up to 48 source packets use a systematic Cauchy erasure code over GF(256). Any 48 distinct valid rows recover a full group, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
 
-The density and refresh choices draw on Decimen's version-40 QR guidance. HiQ documents how lighting and interference between colors affect phone decoding. PhotoPass checks each layer separately and retains whole-file SHA-256 verification. The high-speed packet format is specific to PhotoPass. [Decimen transmission settings](https://github.com/bashalarmistalt/decimen-optical-transfer/blob/main/docs/user/sending.md) · [HiQ mobile color QR research](https://arxiv.org/abs/1704.06447) · [Erasure coding background](https://www.rfc-editor.org/rfc/rfc5510)
+The density and refresh choices draw on Decimen's version-40 QR guidance. HiQ documents how lighting and interference between colors affect phone decoding. For a full-size high-speed frame, PhotoPass locates the brightness QR, samples each cell center in the same camera exposure and uses the three finder patterns to calibrate the colors. The high-speed packet format is specific to PhotoPass. All modes verify the original file with SHA-256. [Decimen transmission settings](https://github.com/bashalarmistalt/decimen-optical-transfer/blob/main/docs/user/sending.md) · [HiQ mobile color QR research](https://arxiv.org/abs/1704.06447) · [Erasure coding background](https://www.rfc-editor.org/rfc/rfc5510)
+
+#### Reproduce the camera benchmark
+
+From a development checkout with Node 24 and Google Chrome, install the optional test dependency with `npm install --no-save --package-lock=false playwright@1.57.0`. These commands time delivery of the same deterministic 2,300,000-byte textured JPEG. Two browser pages communicate through rendered pixels at the same 532-pixel camera footprint. The timer starts when the virtual camera points at the correct kiosk and ends after the saved download is verified.
+
+```sh
+node tests/optical-benchmark.mjs --field-size --fixed --textured --color
+node tests/optical-benchmark.mjs --field-size --fixed --textured --fast
+```
+
+Add `--impaired` to both commands to hold one in five camera updates, apply a 0.4-pixel blur, and reduce contrast and saturation. Use `--gray` to remove color completely. For a venue measurement, send the same original in both modes using the same phone, kiosk, distance and lighting. Compare the elapsed times shown on the phone.
 
 **Try four colors** adds a second packet to each moving frame at the normal square size and frame rate. Brightness carries a complete stream. Phones with a capable decoder can also read a warm/cool layer. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching back to black and white keeps the phone's collected packets. Use **Use larger squares** for cameras that have trouble resolving the grid.
 

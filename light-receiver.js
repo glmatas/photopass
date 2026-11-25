@@ -1,6 +1,6 @@
 import { LTDecoder, fnv1a, parseFrame, streamIdentity, unpackFile } from './vendor/optical/core.js';
 import { decodeQR } from './vendor/qr-codecs.js';
-import { restoreColor } from './light-color.js?v=7';
+import { restoreColor } from './light-color.js?v=8';
 import { highBlockBytes, RepairDecoder } from './light-repair.js';
 
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -164,12 +164,16 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     } catch (error) { fail(error); }
   }
   function makeWorker() {
-    const instance = new Worker(new URL('./vendor/optical/reader-worker.js', import.meta.url), { type: 'module' });
+    const instance = new Worker(new URL('./vendor/optical/reader-worker.js?v=8', import.meta.url), { type: 'module' });
     const slot = { instance, busy: false, started: 0 };
     instance.onmessage = ({ data }) => {
       if (data.id < 0) return;
       slot.busy = false;
       decoded(data.bytes);
+      if (!closed && !verify && data.buf && highColor && colorHeader?.blockLen === highBlockBytes) {
+        const rgba = new Uint8ClampedArray(data.buf);
+        for (const layer of colors) tryColor(layer, rgba, data.w, data.h, data.quad);
+      }
     };
     const discard = () => {
       const i = workers.indexOf(slot);
@@ -181,7 +185,7 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     slot.discard = discard;
     workers.push(slot);
   }
-  function tryColor(layer, pixels, w, h) {
+  function tryColor(layer, pixels, w, h, quad) {
     if (!colorHeader || (layer.green && (!highColor || navigator.hardwareConcurrency <= 2)) ||
         layer.busy || layer.disabled || seq < layer.next || performance.now() - lastSeen > 1200) return;
     const disable = () => {
@@ -191,21 +195,21 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
     };
     try {
       if (!layer.worker) {
-        layer.worker = new Worker(new URL('./vendor/optical/color-reader.js?v=7', import.meta.url), {type:'module'});
+        layer.worker = new Worker(new URL('./vendor/optical/color-reader.js?v=8', import.meta.url), {type:'module'});
         layer.worker.onerror = layer.worker.onmessageerror = disable;
         layer.worker.onmessage = ({data}) => {
           if (data.id < 0 || closed || verify) return;
           layer.busy = false;
           const bytes = restoreColor(data.bytes, expected, colorHeader, highColor);
           if (bytes && receive(bytes, highColor)) layer.failures = 0;
-          else layer.failures = Math.min(5, layer.failures + 1);
+          else layer.failures = Math.min(8, layer.failures + 1);
           const minimumGap = navigator.hardwareConcurrency <= 2 ? 4 : 1;
-          layer.next = seq + Math.max(minimumGap, 1 << layer.failures);
+          layer.next = seq + Math.max(minimumGap, 1 << Math.max(0, layer.failures - 3));
         };
       }
       const copy = pixels.slice();
       layer.busy = true;
-      layer.worker.postMessage({id:seq, buf:copy.buffer, w, h, green:layer.green}, [copy.buffer]);
+      layer.worker.postMessage({id:seq, buf:copy.buffer, w, h, green:layer.green, quad}, [copy.buffer]);
     } catch { disable(); }
   }
   function loop() {
@@ -235,8 +239,9 @@ export async function startLightReceiver(video, { id, onProgress, onPhoto, onErr
       if (slot && !(misses >= 10 && seq % 10 === 0)) {
         slot.busy = true;
         slot.started = performance.now();
-        for (const layer of colors) tryColor(layer, pixels, w, h);
-        slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h }, [pixels.buffer]);
+        const returnPixels = highColor && colorHeader?.blockLen === highBlockBytes;
+        if (!returnPixels) for (const layer of colors) tryColor(layer, pixels, w, h);
+        slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h, returnPixels }, [pixels.buffer]);
       } else {
         // Some WebKit versions run module workers but cannot instantiate this
         // WASM build. Periodic raw-byte JS decoding also covers that path.

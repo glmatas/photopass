@@ -1,6 +1,6 @@
 import { fnv1a, HEADER_LEN, LTEncoder, packFile, packFrame } from './vendor/optical/core.js';
 import { createQR, rasterizeQr } from './vendor/optical/render.js';
-import { colorFlag, colorPacket, paintColor } from './light-color.js?v=7';
+import { colorFlag, colorPacket, paintColor } from './light-color.js?v=8';
 import { highBlockBytes, repairEncoder } from './light-repair.js';
 
 const maxFileBytes = 32 * 1024 * 1024;
