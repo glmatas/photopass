@@ -1,9 +1,9 @@
-import { PhotoPeer } from './peer.js';
-import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js';
+import { PhotoPeer } from './peer.js?v=3';
+import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
 
 const el = id => document.getElementById(id);
-const panels = ['start', 'pairing', 'transfer', 'done', 'error'];
+const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive'];
 const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
 let page = 'start';
 let role = 'kiosk';
@@ -22,18 +22,77 @@ let captureController;
 let captureVersion = 0;
 let selectedCameraId;
 let capturedHere = false;
+let receiverPage;
+let lightSender;
+let lightReceiver;
+let lightController;
+let lightId;
+let retryMode;
+let wakeLock;
+let wakePending = false;
+const preferDirect = new URLSearchParams(location.search).has('direct');
+
+async function updateScreenLock() {
+  const needsScreen = () => (page === 'light-send' || page === 'light-receive') && document.visibilityState === 'visible';
+  if (!needsScreen()) {
+    const previous = wakeLock;
+    wakeLock = undefined;
+    if (previous) await previous.release().catch(() => {});
+    return;
+  }
+  if (wakePending || wakeLock || !navigator.wakeLock) return;
+  wakePending = true;
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    if (!needsScreen()) await lock.release();
+    else {
+      wakeLock = lock;
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = undefined; });
+    }
+  } catch { /* Camera transfer still works while the visitor keeps the screen awake. */ }
+  finally { wakePending = false; }
+}
 
 function show(name) {
   page = name;
+  updateScreenLock();
+  if (name !== 'pairing' && document.documentElement.classList.contains('qr-expanded')) setExpanded(false);
+  if (name !== 'light-send' && document.documentElement.classList.contains('light-expanded')) expandLight(false);
   for (const panel of panels) el(panel + '-panel').hidden = name !== panel;
   el('reset-button').hidden = name === 'start';
-  el('reset-button').textContent = role === 'phone' ? 'Close session' : name === 'done' ? 'Next visitor' : 'Start over';
+  let resetLabel = 'Start over';
+  if (role === 'phone') resetLabel = 'Close session';
+  else if (name === 'done' || name === 'light-send') resetLabel = 'Next visitor';
+  else if (name === 'pairing' && capturedHere) resetLabel = 'Retake photo';
+  el('reset-button').textContent = resetLabel;
 }
 
 function stopScan() {
   camera?.();
   camera = undefined;
   el('scanner').hidden = true;
+  el('pairing-panel').classList.remove('scanning');
+}
+
+function setExpanded(value) {
+  document.documentElement.classList.toggle('qr-expanded', value);
+  el('expand-qr').setAttribute('aria-pressed', String(value));
+  el('expand-qr').textContent = value ? 'Close enlarged view' : 'Enlarge code';
+}
+
+function expandLight(value) {
+  document.documentElement.classList.toggle('light-expanded', value);
+  el('light-zoom').setAttribute('aria-pressed', String(value));
+  el('light-zoom').textContent = value ? 'Close enlarged view' : 'Enlarge moving code';
+}
+
+function stopLight() {
+  lightSender?.stop();
+  lightSender = undefined;
+  lightController?.abort();
+  lightController = undefined;
+  lightReceiver?.();
+  lightReceiver = undefined;
 }
 
 function stopCapture() {
@@ -95,6 +154,7 @@ async function startCapture() {
 
 function cleanUp() {
   generation++;
+  stopLight();
   stopCapture();
   stopScan();
   peer?.close();
@@ -115,6 +175,8 @@ function reset(clearLocation = true) {
   el('file-input').value = '';
   el('preview').removeAttribute('src');
   el('preview').hidden = true;
+  el('pair-photo').removeAttribute('src');
+  el('pair-photo').hidden = true;
   el('received-image').removeAttribute('src');
   el('received-image').hidden = true;
   el('save-link').removeAttribute('href');
@@ -135,13 +197,17 @@ function reset(clearLocation = true) {
   }
 }
 
-function fail(message) {
+function fail(message, title = 'Transfer interrupted') {
   stopScan();
+  stopLight();
   peer?.close();
   peer = undefined;
   generation++;
   show('error');
+  el('error-title').textContent = title;
   el('error-message').textContent = message;
+  el('error-retry').hidden = role !== 'kiosk' || !picked;
+  el('error-retry').textContent = retryMode === 'direct' ? 'Retry with this photo' : 'Show pickup code again';
   el('status').textContent = '';
 }
 
@@ -190,7 +256,13 @@ function createPeer() {
     },
     onPhoto(blob, filename) { if (current === generation) done(blob, filename); },
     onSent() { if (current === generation) done(); },
-    onFailure(message) { if (current === generation && page !== 'done') fail(message); }
+    onFailure(message, stage) {
+      if (current !== generation || page === 'done') return;
+      const title = stage === 'pairing' ? 'The devices couldn’t connect' : 'Transfer interrupted';
+      if (role === 'kiosk') retryMode = 'light';
+      if (stage === 'pairing' && role === 'phone') message += ' Scan the screen-transfer pickup code on the kiosk to receive it by camera.';
+      fail(message, title);
+    }
   });
 }
 
@@ -211,10 +283,12 @@ async function pair(text, receiver, current) {
   el('scan-button').hidden = receiver;
   el('scan-button').disabled = false;
   el('scan-status').textContent = '';
-  el('pair-title').textContent = receiver ? 'Show this code to the kiosk' : 'Scan to collect your photo';
+  el('pair-photo').hidden = receiver || !previousPreview;
+  if (!el('pair-photo').hidden) el('pair-photo').src = previousPreview;
+  el('pair-title').textContent = receiver ? 'Show this code to the kiosk' : 'Scan with your phone';
   el('pair-instructions').textContent = receiver
-    ? 'Hold your screen in front of the kiosk camera. Keep this tab open until your photo arrives.'
-    : 'Open the phone camera and scan this code. When a reply code appears on the phone, scan it with the kiosk camera.';
+    ? 'Face your screen toward the kiosk camera. Keep this page open.'
+    : 'Open your camera and scan this code. Then show the reply to the kiosk.';
   if (!qrAvailable) {
     el('pair-title').textContent = 'Pair using text';
     el('pair-instructions').textContent = receiver
@@ -258,8 +332,10 @@ function selectFile(file, fromCamera = false) {
   el('start-button').hidden = el('start-button').disabled = false;
 }
 
-async function begin() {
-  if (!picked || page !== 'start') return;
+async function beginDirect() {
+  if (!picked || role !== 'kiosk') return;
+  stopLight();
+  retryMode = 'direct';
   const current = generation;
   working('Preparing the QR code', 'Finding a direct connection…');
   try {
@@ -268,17 +344,138 @@ async function begin() {
     peer = createPeer();
     const offer = await peer.offer(picked);
     if (current !== generation) return;
-    const offerLink = await makeSignalURL(offer, session);
+    const offerLink = await makeSignalURL(offer, session, receiverPage);
     if (current === generation) await pair(offerLink, false, current);
   } catch (error) {
-    if (current === generation) fail(error.message);
+    if (current === generation) fail(error.message, 'Couldn’t prepare the pairing code');
   }
 }
 
+function lightHash(id) {
+  const bytes = id.match(/../g).map(hex => Number.parseInt(hex, 16));
+  return '#L' + btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_');
+}
+
+function parseLightHash(hash) {
+  if (!/^#L[A-Za-z0-9_-]{16}$/.test(hash)) throw new Error('Scan the pickup code on the kiosk again.');
+  const bytes = atob(hash.slice(2).replaceAll('-', '+').replaceAll('_', '/'));
+  return Array.from(bytes, byte => byte.charCodeAt(0).toString(16).padStart(2, '0')).join('');
+}
+
+async function beginLight() {
+  if (!picked || role !== 'kiosk') return;
+  stopLight();
+  retryMode = 'light';
+  const current = generation;
+  working('Preparing your photo', 'Making the pickup code…');
+  try {
+    const { prepareLightSender } = await import('./light-sender.js?v=3');
+    if (current !== generation) return;
+    const transfer = await prepareLightSender(picked, el('light-stream'), {
+      onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
+    });
+    if (current !== generation) { transfer.stop(); return; }
+    lightSender = transfer;
+    const url = new URL(receiverPage || location.href);
+    url.search = '?3';
+    url.hash = lightHash(transfer.id);
+    drawCode(el('light-join'), url.href);
+    el('light-size').textContent = picked.name + ' · ' + (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
+    el('light-easy').setAttribute('aria-pressed', 'false');
+    el('light-easy').textContent = 'Use larger squares';
+    el('light-mode-note').textContent = picked.size >= 2_000_000 ? 'Keep the phone in place. Large originals can take several minutes.' : '';
+    el('status').textContent = '';
+    show('light-send');
+    transfer.start();
+  } catch (error) {
+    if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
+  }
+}
+
+function begin() {
+  if (page !== 'start') return;
+  return preferDirect ? beginDirect() : beginLight();
+}
+
+async function readLight() {
+  if (lightController || role !== 'phone' || page !== 'light-receive') return;
+  const current = generation;
+  lightController = new AbortController();
+  const signal = lightController.signal;
+  let hintTimer;
+  let started;
+  let previousProgress = 0;
+  const hintAfterPause = () => {
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      if (!signal.aborted) el('light-label').textContent = 'Keep all four corners in view. If progress stalls, choose Use larger squares on the kiosk.';
+    }, 10000);
+  };
+  signal.addEventListener('abort', () => clearTimeout(hintTimer), { once: true });
+  el('light-start').hidden = true;
+  el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
+  try {
+    const { startLightReceiver } = await import('./light-receiver.js?v=3');
+    if (signal.aborted) return;
+    const release = await startLightReceiver(el('light-video'), {
+      id: lightId,
+      signal,
+      onProgress(fraction) {
+        if (signal.aborted) return;
+        if (fraction < previousProgress) started = undefined;
+        if (fraction > 0 && !started) started = performance.now();
+        previousProgress = fraction;
+        const percent = Math.min(100, Math.floor(fraction * 100));
+        el('light-progress').value = percent;
+        let hint = 'Keep the whole moving square in view.';
+        const seconds = started ? (performance.now() - started) / 1000 : 0;
+        if (seconds > 8 && fraction > 0 && fraction < 0.96) {
+          const remaining = seconds * (1 - fraction) / fraction;
+          hint = remaining >= 60 ? 'About ' + Math.ceil(remaining / 60) + ' min remaining.' : 'Less than a minute remaining.';
+        }
+        el('light-label').textContent = percent < 100 ? percent + '% received · ' + hint : 'Verifying the original photo…';
+        hintAfterPause();
+      },
+      onPhoto(blob, name) {
+        if (signal.aborted) return;
+        stopLight();
+        done(blob, name);
+      },
+      onError(message) {
+        if (signal.aborted) return;
+        stopLight();
+        el('light-label').textContent = String(message);
+        el('light-start').hidden = false;
+      }
+    });
+    if (signal.aborted || page !== 'light-receive') release();
+    else {
+      lightReceiver = release;
+      hintAfterPause();
+    }
+  } catch (error) {
+    if (current !== generation || signal.aborted) return;
+    stopLight();
+    el('light-start').hidden = false;
+    el('light-label').textContent = error.name === 'NotAllowedError'
+      ? 'Allow camera access in your browser, then try again.' : error.message;
+  }
+}
+
+function openLight() {
+  role = 'phone';
+  try { lightId = parseLightHash(location.hash); }
+  catch (error) { fail(error.message, 'Incomplete pickup link'); return; }
+  el('light-progress').value = 0;
+  show('light-receive');
+  readLight();
+}
+
 // A photo booth embedding this page can pass the File produced by its camera.
-export async function startPhotoSession(file) {
+export async function startPhotoSession(file, { receiverURL } = {}) {
   if (role !== 'kiosk') throw new Error('Open the kiosk page to start a photo session.');
   reset();
+  receiverPage = receiverURL ? new URL(receiverURL, location.href).href : undefined;
   selectFile(file);
   if (!picked) throw new Error(el('file-label').textContent);
   await begin();
@@ -288,19 +485,21 @@ async function openOffer(text) {
   role = 'phone';
   const current = generation;
   working('Preparing your reply code', 'Finding a direct connection…');
+  let errorTitle = 'Couldn’t read the kiosk code';
   try {
     requireBrowser();
     const signal = await readSignal(text);
     if (signal.description.type !== 'offer') throw new Error('Scan the code on the kiosk to start a transfer.');
     if (current !== generation) return;
+    errorTitle = 'Couldn’t prepare the phone’s reply';
     session = signal.session;
     peer = createPeer();
     const answer = await peer.answer(signal.description);
     if (current !== generation) return;
-    const reply = await makeAnswerText(answer, session);
+    const reply = await makeAnswerText(answer, session, signal.protocol);
     if (current === generation) await pair(reply, true, current);
   } catch (error) {
-    if (current === generation) fail(error.message);
+    if (current === generation) fail(error.message, errorTitle);
   }
 }
 
@@ -322,7 +521,7 @@ async function acceptReply(text) {
     working('Connecting to the phone', 'Keep both screens open.');
     await peer.accept(signal.description);
   } catch (error) {
-    if (current === generation) fail(error.message);
+    if (current === generation) fail(error.message, 'Couldn’t use the phone’s reply');
   } finally {
     if (current === generation) accepting = false;
   }
@@ -346,7 +545,10 @@ el('take-button').addEventListener('click', async () => {
   el('take-button').disabled = true;
   try {
     const photo = await takePhoto(el('capture-video'));
-    if (version === captureVersion) selectFile(photo, true);
+    if (version === captureVersion) {
+      selectFile(photo, true);
+      if (picked === photo) await begin();
+    }
   } catch {
     if (version === captureVersion) el('capture-status').textContent = 'The photo could not be captured. Wait for a clear preview and try again.';
   } finally {
@@ -360,6 +562,18 @@ el('retake-button').addEventListener('click', () => {
   startCapture();
 });
 el('start-button').addEventListener('click', begin);
+el('light-start').addEventListener('click', readLight);
+el('light-direct').addEventListener('click', beginDirect);
+el('light-easy').addEventListener('click', () => {
+  if (!lightSender) return;
+  const enabled = el('light-easy').getAttribute('aria-pressed') !== 'true';
+  lightSender.setLargeSquares(enabled);
+  el('light-easy').setAttribute('aria-pressed', String(enabled));
+  el('light-easy').textContent = enabled ? 'Use faster transfer' : 'Use larger squares';
+  el('light-mode-note').textContent = enabled ? 'Larger squares move more slowly. Your phone will restart collection.' : 'Faster transfer selected. Your phone will restart collection.';
+});
+el('light-zoom').addEventListener('click', () => expandLight(!document.documentElement.classList.contains('light-expanded')));
+el('error-retry').addEventListener('click', () => retryMode === 'direct' ? beginDirect() : beginLight());
 el('reset-button').addEventListener('click', () => {
   reset();
   if (role === 'kiosk') startCapture();
@@ -376,6 +590,7 @@ async function scanReply() {
     if (current !== generation || page !== 'pairing') release();
     else {
       camera = release;
+      el('pairing-panel').classList.add('scanning');
       el('scan-button').hidden = true;
       el('scan-status').textContent = 'Hold the phone’s reply code in front of this camera.';
     }
@@ -391,6 +606,11 @@ async function scanReply() {
   }
 }
 el('scan-button').addEventListener('click', scanReply);
+el('expand-qr').addEventListener('click', () => setExpanded(!document.documentElement.classList.contains('qr-expanded')));
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.documentElement.classList.contains('qr-expanded')) setExpanded(false);
+  if (event.key === 'Escape' && document.documentElement.classList.contains('light-expanded')) expandLight(false);
+});
 el('manual-apply').addEventListener('click', () => acceptReply(el('manual-input').value));
 el('copy-button').addEventListener('click', async () => {
   try {
@@ -407,14 +627,19 @@ el('share-button').addEventListener('click', async () => {
   catch (error) { if (error.name !== 'AbortError') el('status').textContent = 'Use the download button to save your photo.'; }
 });
 window.addEventListener('pagehide', cleanUp);
+document.addEventListener('visibilitychange', updateScreenLock);
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-window.addEventListener('hashchange', () => {
-  reset(false);
-  if (location.hash) openOffer(location.href);
-  else if (role === 'kiosk') startCapture();
-});
-if (location.hash) openOffer(location.href);
-else {
-  show('start');
-  startCapture();
+function enterRoute() {
+  if (location.hash.startsWith('#L')) return openLight();
+  if (location.hash) return openOffer(location.href);
+  if (['?2', '?3'].includes(location.search)) {
+    role = 'phone';
+    return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
+  }
+  if (role === 'kiosk') {
+    show('start');
+    startCapture();
+  }
 }
+window.addEventListener('hashchange', () => { reset(false); enterRoute(); });
+enterRoute();

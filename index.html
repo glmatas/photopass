@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css">
-  <script type="module" src="./app.js"></script>
+  <link rel="stylesheet" href="./style.css?v=3">
+  <script type="module" src="./app.js?v=3"></script>
 </head>
 <body>
   <header class="masthead">
@@ -24,7 +24,7 @@
       <div class="start-copy">
         <div class="start-intro">
           <h1 id="start-title">Take a<br><em>photo.</em></h1>
-          <p class="intro">Take your photo here, then pair your phone to save the original.</p>
+          <p class="intro">Take your photo here, then use your phone’s camera to collect it.</p>
         </div>
         <div class="capture-operations">
           <div id="camera-picker" class="camera-picker" hidden>
@@ -34,7 +34,7 @@
           <div class="capture-buttons">
             <button type="button" id="camera-button" class="button primary">Enable camera</button>
             <button type="button" id="take-button" class="button primary" disabled>Take photo</button>
-            <button type="button" id="start-button" class="button primary arrow" disabled hidden>Pair a phone</button>
+            <button type="button" id="start-button" class="button primary arrow" disabled hidden>Show pickup code</button>
             <button type="button" id="retake-button" class="button secondary" hidden>Retake photo</button>
           </div>
           <p id="capture-status" class="support-text" role="status" aria-live="polite"></p>
@@ -69,16 +69,69 @@
       </div>
     </section>
 
+    <section class="screen light-send" id="light-send-panel" aria-labelledby="light-send-title" hidden>
+      <div class="light-send-head">
+        <h1 id="light-send-title">Get your photo</h1>
+        <p id="light-size" class="support-text"></p>
+      </div>
+      <div class="light-layout">
+        <figure class="light-join-card">
+          <figcaption>
+            <h2>Scan to open</h2>
+            <p>Use your phone’s camera to open this link.</p>
+          </figcaption>
+          <canvas id="light-join" role="img" aria-label="Scan to open the photo receiver"></canvas>
+        </figure>
+        <figure class="light-stream-card">
+          <figcaption>
+            <h2>Keep your camera here</h2>
+            <p>Once the link opens, point your phone at this moving square.</p>
+          </figcaption>
+          <canvas id="light-stream" role="img" aria-label="Moving code carrying the photo"></canvas>
+          <div class="light-stream-tools">
+            <button type="button" id="light-zoom" class="button secondary" aria-controls="light-stream" aria-pressed="false">Enlarge moving code</button>
+            <button type="button" id="light-easy" class="reset-button" aria-controls="light-stream" aria-pressed="false">Use larger squares</button>
+          </div>
+          <p id="light-mode-note" class="support-text" role="status"></p>
+        </figure>
+      </div>
+      <button type="button" id="light-direct" class="reset-button">Use direct transfer instead</button>
+    </section>
+
+    <section class="screen light-receive" id="light-receive-panel" aria-labelledby="light-receive-title" hidden>
+      <div class="light-receive-copy">
+        <h1 id="light-receive-title">Receive your photo</h1>
+        <p class="intro">Allow camera access, then keep all four corners of the kiosk’s moving square in view.</p>
+        <button type="button" id="light-start" class="button primary">Enable camera</button>
+        <p id="light-label" class="support-text" role="status">Waiting for the camera…</p>
+        <progress id="light-progress" max="100" value="0" aria-label="Photo received" aria-describedby="light-label"></progress>
+      </div>
+      <div class="light-view">
+        <video id="light-video" aria-label="Camera view of the kiosk’s moving square" playsinline muted autoplay></video>
+        <span class="capture-guide" aria-hidden="true"></span>
+      </div>
+    </section>
+
     <section class="screen pair-screen" id="pairing-panel" aria-labelledby="pair-title" hidden>
       <div class="pair-copy">
-        <h1 id="pair-title">Pair your phone</h1>
-        <p id="pair-instructions" class="intro">Scan the code with your phone’s camera.</p>
-        <button type="button" id="scan-button" class="button primary">Scan phone’s reply</button>
-        <p id="scan-status" class="support-text" role="status"></p>
-        <video id="scanner" aria-label="Live camera view for scanning the reply code" playsinline muted hidden></video>
+        <div class="pair-guide">
+          <h1 id="pair-title">Scan with your phone</h1>
+          <div class="pair-directions">
+            <img id="pair-photo" class="pair-photo" alt="Photo to be transferred" hidden>
+            <p id="pair-instructions" class="intro">Open your camera, scan this code, then show the phone’s reply to the kiosk.</p>
+          </div>
+        </div>
+        <div class="pair-actions">
+          <button type="button" id="scan-button" class="button primary">Scan phone’s reply</button>
+          <div class="scan-preview">
+            <video id="scanner" aria-label="Live kiosk camera view of the phone’s reply code" playsinline muted hidden></video>
+            <p id="scan-status" class="support-text" role="status"></p>
+          </div>
+        </div>
       </div>
       <div class="code-area">
         <canvas id="pair-qr" role="img" aria-label="Device pairing QR code"></canvas>
+        <button type="button" id="expand-qr" class="button secondary" aria-controls="pair-qr" aria-pressed="false">Enlarge code</button>
       </div>
       <details id="manual-tools" class="manual-tools">
         <summary>Pair using text</summary>
@@ -112,6 +165,7 @@
     <section class="screen single-screen" id="error-panel" aria-labelledby="error-title" hidden>
       <h1 id="error-title">Transfer interrupted</h1>
       <p id="error-message" class="intro" role="alert"></p>
+      <button type="button" id="error-retry" class="button primary" hidden>Try again</button>
     </section>
 
     <div class="session-footer">

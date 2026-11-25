@@ -8,6 +8,7 @@ const CHUNK = 16 * 1024;
 const HIGH_WATER = 256 * 1024;
 const LOW_WATER = 64 * 1024;
 const GATHER_MS = 8000;
+const EXTRA_GATHER_MS = 8000;
 const IDLE_MS = 60000;
 const UNREACHABLE = "A direct connection could not be established. The mobile or venue network may block it.";
 
@@ -46,26 +47,78 @@ function checkDescription(description, type) {
   return { type, sdp };
 }
 
-// Gather before displaying a code so it contains the addresses needed by the other browser.
+// Some browsers emit a candidate before exposing it in localDescription. A QR
+// is a single exchange, so include event-only candidates for this data section.
+function gatheredDescription(session) {
+  const desc = session.pc.localDescription;
+  if (!desc) throw new Error("The browser has not prepared its connection details.");
+  const eol = desc.sdp.includes("\r\n") ? "\r\n" : "\n";
+  const lines = desc.sdp.split(eol);
+  const start = lines.findIndex(line => line.startsWith("m=application "));
+  if (start < 0) throw new Error("The browser did not create a photo data channel.");
+  const nextMedia = lines.findIndex((line, i) => i > start && line.startsWith("m="));
+  const end = nextMedia < 0 ? lines.length : nextMedia;
+  const section = lines.slice(start, end);
+  const mid = section.find(line => line.startsWith("a=mid:"))?.slice(6);
+  const ufrag = (section.find(line => line.startsWith("a=ice-ufrag:")) ||
+    lines.slice(0, start).find(line => line.startsWith("a=ice-ufrag:")))?.slice(12);
+  const mediaIndex = lines.slice(0, start).filter(line => line.startsWith("m=")).length;
+  // The username fragment may be present only in the event's serialization.
+  const key = line => line.replace(/ ufrag \S+/gi, "").trim();
+  const known = new Set(section.filter(line => line.startsWith("a=candidate:")).map(key));
+  const additions = [];
+  for (const candidate of session.candidates) {
+    if ((candidate.sdpMid != null && mid != null && candidate.sdpMid !== mid) ||
+        (candidate.sdpMLineIndex != null && candidate.sdpMLineIndex !== mediaIndex) ||
+        (candidate.usernameFragment && ufrag && candidate.usernameFragment !== ufrag)) continue;
+    const raw = candidate.candidate;
+    if (typeof raw !== "string" || !raw.startsWith("candidate:") || /[\r\n]/.test(raw)) continue;
+    const line = "a=" + raw.trim();
+    if (!known.has(key(line))) { additions.push(line); known.add(key(line)); }
+  }
+  if (!additions.length) return { type: desc.type, sdp: desc.sdp };
+  const marker = section.findIndex(line => line === "a=end-of-candidates" || !line);
+  lines.splice(marker < 0 ? end : start + marker, 0, ...additions);
+  return { type: desc.type, sdp: lines.join(eol) };
+}
+
 function gather(session) {
   const { pc, signal } = session;
   return new Promise((resolve, reject) => {
-    let timer;
+    let timer, completionTimer;
     function finish() {
       clearTimeout(timer);
+      clearTimeout(completionTimer);
+      pc.removeEventListener("icecandidate", changed);
       pc.removeEventListener("icegatheringstatechange", changed);
+      pc.onicecandidate = null;
       signal.removeEventListener("abort", finish);
       if (signal.aborted) return reject(new Error("Transfer canceled."));
-      const desc = pc.localDescription;
-      if (!desc || !/^a=candidate:/m.test(desc.sdp)) {
-        return reject(new Error("The browser could not find a network address for pairing."));
+      try {
+        const desc = gatheredDescription(session);
+        // An answerer can initiate checks against the offer even when its own
+        // browser exposes no candidates (peer-reflexive discovery, RFC 8863 §3.1).
+        if (session.role === "sender" && !/^a=candidate:/m.test(desc.sdp)) {
+          throw new Error("The browser could not find a network address for pairing.");
+        }
+        resolve(desc);
+      } catch (error) {
+        reject(error);
       }
-      resolve({ type: desc.type, sdp: desc.sdp });
     }
     function changed() {
-      if (pc.iceGatheringState === "complete") finish();
+      if (pc.iceGatheringState === "complete" || session.gatheringEnded) {
+        // Let the final queued candidate event update the SDP or event list.
+        completionTimer ??= setTimeout(finish, 60);
+      }
     }
-    timer = setTimeout(finish, GATHER_MS);
+    timer = setTimeout(() => {
+      const hasMapped = / typ (?:srflx|prflx)\b/i.test(pc.localDescription?.sdp || "") ||
+        session.candidates.some(c => / typ (?:srflx|prflx)\b/i.test(c.candidate));
+      if (hasMapped) finish();
+      else timer = setTimeout(finish, EXTRA_GATHER_MS);
+    }, GATHER_MS);
+    pc.addEventListener("icecandidate", changed);
     pc.addEventListener("icegatheringstatechange", changed);
     signal.addEventListener("abort", finish, { once: true });
     if (signal.aborted) finish();
@@ -104,14 +157,16 @@ export class PhotoPeer {
     clearTimeout(s.timer);
     clearTimeout(s.disconnectTimer);
     s.controller.abort();
+    s.pc.onicecandidate = null;
     s.channel?.close();
     s.pc.close();
   }
 
   _fail(s, message) {
     if (this.session !== s || s.phase === "done") return;
+    const phase = s.phase === "pairing" ? "pairing" : "transfer";
     this.close();
-    this.callbacks.onFailure?.(message);
+    this.callbacks.onFailure?.(message, phase);
   }
 
   _deadline(s, ms, message) {
@@ -124,15 +179,26 @@ export class PhotoPeer {
     if (!globalThis.RTCPeerConnection || !globalThis.crypto?.subtle) {
       throw new Error("Open this page in a WebRTC-capable browser over HTTPS or localhost.");
     }
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    const pc = new RTCPeerConnection({ iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun.cloudflare.com:3478" },
+    ] });
     const controller = new AbortController();
-    const s = { pc, role, controller, signal: controller.signal, phase: "pairing" };
+    const s = { pc, role, controller, signal: controller.signal, phase: "pairing", candidates: [] };
     this.session = s;
+    pc.onicecandidate = event => {
+      if (event.candidate === null) s.gatheringEnded = true;
+      else if (event.candidate?.candidate) s.candidates.push(event.candidate);
+    };
     const networkChanged = () => {
       if (this.session !== s || s.phase === "done") return;
       const state = pc.connectionState || pc.iceConnectionState;
-      if (state === "failed" || pc.iceConnectionState === "failed") return this._fail(s, UNREACHABLE);
-      if (state === "disconnected" || pc.iceConnectionState === "disconnected") {
+      if (state === "failed" || pc.iceConnectionState === "failed") {
+        return this._fail(s, s.phase === "pairing" ? UNREACHABLE : "The direct connection was lost during the photo transfer.");
+      }
+      // A transient disconnect before the kiosk receives the reply is covered
+      // by the pairing deadline; it does not start a transfer-stall timer.
+      if (s.phase !== "pairing" && (state === "disconnected" || pc.iceConnectionState === "disconnected")) {
         s.disconnectTimer ??= setTimeout(() => this._fail(s, "The connection was interrupted."), 12000);
       } else {
         clearTimeout(s.disconnectTimer);
