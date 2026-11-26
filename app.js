@@ -1,7 +1,7 @@
 import { PhotoPeer } from './peer.js?v=10';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=14';
+import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=15';
 import {receivePickup} from './pickup-direct.js?v=12';
 
 const el = id => document.getElementById(id);

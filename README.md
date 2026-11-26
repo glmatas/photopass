@@ -18,7 +18,7 @@ If the phone is muted, its audio goes to headphones, or the kiosk cannot hear it
 
 #### Browser audio compatibility
 
-Automatic pairing begins after the pickup page opens and its camera is running. The phone tries two short bursts. On the kiosk, **Listening for the phone** identifies the active microphone when its name is available. **Phone tone received** means that microphone decoded the matching pickup signal. **Sending the photo directly** appears once the direct channel starts carrying file bytes. The moving square can start on its timer before the kiosk hears a tone.
+Automatic pairing begins after the pickup page opens and its camera is running. The phone plays its ready tone (about 1 s) up to three times, stopping as soon as the kiosk offer arrives, and plays its pairing reply (about 5 s) twice. Pairing tones use a slow narrowband GMSK signal near 4.4 kHz that survives a real speaker-to-microphone path; camera-free sound pickup keeps its faster modem. On the kiosk, **Listening for the phone** identifies the active microphone when its name is available. **Phone tone received** means that microphone decoded the matching pickup signal. **Sending the photo directly** appears once the direct channel starts carrying file bytes. The moving square can start on its timer before the kiosk hears a tone.
 
 Listen for a short rising chirp from the phone once its camera preview opens. The automatic attempt and the pairing reply use media volume on iPhones that support the Audio Session API (iOS 17 and later). Leave media volume audible and select the phone speaker if headphones are connected. **Pairing tone played** means the browser finished playback. The kiosk shows **Phone tone received** when its microphone decodes the signal. PhotoPass restores the previous audio setting when pairing ends. [WebKit on Silent mode and Web Audio](https://bugs.webkit.org/show_bug.cgi?id=237322#c6)
 
@@ -55,6 +55,8 @@ node tests/pickup-routes.mjs --break-rtc
 node tests/pickup-routes.mjs --drop-rtc
 node tests/pickup-routes.mjs --lose-answer
 ```
+
+`node tests/real-audio.mjs --real-speaker` measures the pairing tones over the real speaker and a Logitech BRIO microphone. It plays audible tones and never opens the camera; it is not part of the normal test runs.
 
 With Playwright's Firefox and WebKit engines installed, run `node tests/browser-autoplay.mjs` to report whether a fresh page actually starts a tone after camera capture. Desktop engine results are specific to that build and its media settings.
 

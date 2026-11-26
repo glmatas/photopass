@@ -51,10 +51,10 @@ export async function readyTone(packet, signal, onReady, {
       clearTimeout(resumeTimer);
       if (life.signal.aborted) return;
     }
-    const {openSoundModem} = await import('./sound-modem.js?v=13');
+    const {openSoundModem, pairingProfile} = await import('./sound-modem.js?v=14');
     if (life.signal.aborted) return;
     modem = await openSoundModem({
-      context, listen:Boolean(onReady), signal:life.signal, onError:unavailable, cameraGroup, micTimeoutMs:40000,
+      context, listen:Boolean(onReady), signal:life.signal, onError:unavailable, cameraGroup, micTimeoutMs:40000, profile:pairingProfile,
       onPacket(bytes) {
         if (onReady && !life.signal.aborted && packet.length === bytes.length &&
             packet.every((value, i) => value === bytes[i])) onReady();
@@ -65,10 +65,25 @@ export async function readyTone(packet, signal, onReady, {
     await resumed;
     if (life.signal.aborted) return;
     if (onReady) { clearTimeout(timeout); onListening?.(modem.inputLabel); return; }
+    // Setup is done; a long packet (the answer is about 5 s of audio) must not trip the setup timeout.
+    clearTimeout(timeout);
     await modem.send(packet, {pairingChirp});
     if (life.signal.aborted) return;
     onPlayed?.();
-    retry = setTimeout(() => { modem.send(packet, {pairingChirp}).catch(() => {}).finally(close); }, 1000);
+    // Replay after 1 s as before. The ready tone, which has no other trigger, plays 3 times in total
+    // (the third 3 s later) so a missed first play never needs a tap. The answer plays twice.
+    // Aborting the tone (the answer replaces the ready packet) cancels any pending replay.
+    const gaps = pairingChirp ? [1000, 3000] : [1000];
+    let replays = 0;
+    const replay = () => {
+      retry = setTimeout(() => {
+        modem.send(packet, {pairingChirp}).catch(() => {}).finally(() => {
+          if (life.signal.aborted) return;
+          if (++replays < gaps.length) replay(); else close();
+        });
+      }, gaps[replays]);
+    };
+    replay();
   } catch (error) { unavailable(error); }
 }
 

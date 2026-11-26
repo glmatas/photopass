@@ -10,14 +10,34 @@ var Module = {
 };
 importScripts('./quiet-emscripten.js');
 
-let encoder, decoder, samplePtr, bytesPtr, rate;
+let encoder, decoder, samplePtr, bytesPtr, rate, frameLength = maxPacket, txGain = 1;
 
-async function setup(hz, listen) {
+function merge(base, extra) {
+  const out = {...base};
+  for (const [key, value] of Object.entries(extra || {})) {
+    out[key] = value && typeof value === 'object' && !Array.isArray(value) && base?.[key] && typeof base[key] === 'object'
+      ? merge(base[key], value) : value;
+  }
+  return out;
+}
+
+// profile: undefined (default OFDM at the full 1200-byte frame), a quiet-profiles.json name, or
+// {base, ...overrides} with nested objects deep-merged onto the base entry.
+async function setup(hz, listen, spec, gain) {
   await initialized;
   const response = await fetch(new URL('./quiet-profiles.json', self.location.href));
   if (!response.ok) throw new Error('Sound profile could not be loaded.');
-  const profile = (await response.json())['audible-7k-channel-0'];
-  profile.frame_length = maxPacket;
+  const profiles = await response.json();
+  let profile;
+  if (spec === undefined || spec === null) profile = {...profiles['audible-7k-channel-0'], frame_length: maxPacket};
+  else {
+    const {base = 'audible-7k-channel-0', ...overrides} = typeof spec === 'string' ? {base: spec} : spec;
+    if (!profiles[base]) throw new Error('Unknown sound profile ' + base + '.');
+    profile = merge(profiles[base], overrides);
+  }
+  frameLength = Math.min(maxPacket, Number(profile.frame_length));
+  profile.frame_length = frameLength;
+  txGain = Number.isFinite(gain) && gain > 0 ? gain : 1;
   const config = Module.intArrayFromString(JSON.stringify({ photo: profile }));
   const name = Module.intArrayFromString('photo');
   function create(kind) {
@@ -38,7 +58,7 @@ async function setup(hz, listen) {
 }
 
 function encode(bytes) {
-  if (!encoder || !bytes.length || bytes.length > maxPacket) throw new Error('Invalid sound packet size.');
+  if (!encoder || !bytes.length || bytes.length > frameLength) throw new Error('Invalid sound packet size.');
   Module.HEAPU8.set(bytes, bytesPtr);
   if (Module._quiet_encoder_send(encoder, bytesPtr, bytes.length) !== bytes.length) throw new Error('Sound encoder is busy.');
   const chunks = [];
@@ -70,7 +90,7 @@ function encode(bytes) {
   // OFDM has a high crest factor. Lift this very quiet upstream profile to a
   // predictable peak without clipping or changing the relative carrier levels.
   if (peak > 0) {
-    const gain = 0.72 / peak;
+    const gain = 0.72 / peak * txGain;
     for (let i = lead; i < lead + total; i++) pcm[i] *= gain;
   }
   return pcm;
@@ -94,8 +114,8 @@ function consume(input) {
 self.onmessage = async ({data}) => {
   try {
     if (data.kind === 'init') {
-      await setup(data.rate, data.listen);
-      self.postMessage({kind:'ready', maxPacket});
+      await setup(data.rate, data.listen, data.profile, data.txGain);
+      self.postMessage({kind:'ready', maxPacket, frameLength});
     } else if (data.kind === 'encode') {
       const pcm = encode(data.bytes);
       self.postMessage({kind:'wave', id:data.id, pcm}, [pcm.buffer]);
