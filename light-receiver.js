@@ -267,9 +267,21 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
   signal?.addEventListener('abort', stop, { once: true });
   window.addEventListener('pagehide', stop, { once: true });
   try {
-    const open = navigator.mediaDevices.getUserMedia({ audio: false, video: {
-      facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 },
-    } }).then(active => {
+    // A faster camera captures each symbol several times between content
+    // changes. Resolution outranks frame rate when a camera offers only one.
+    const request = { audio: false, video: {
+      facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 },
+    } };
+    async function openCamera() {
+      for (let attempt = 1; ; attempt++) {
+        try { return await navigator.mediaDevices.getUserMedia(request); } catch (error) {
+          // The app that scanned the link, or a closing tab, can briefly hold the camera.
+          if (closed || error.name !== 'NotReadableError' || attempt > 5) throw error;
+          await new Promise(resolve => setTimeout(resolve, 600 * attempt));
+        }
+      }
+    }
+    const open = openCamera().then(active => {
       if (closed) { active.getTracks().forEach(track => track.stop()); throw cancelled(); }
       stream = active;
       return active;
@@ -280,15 +292,9 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
     track.addEventListener('ended', () => {
       if (!verify) fail(new Error('Camera disconnected. Open the camera again.'));
     }, { once: true });
-    const capabilities = track.getCapabilities?.() || {}, settings = track.getSettings?.() || {};
-    const tuning = {};
-    if (capabilities.focusMode?.includes('continuous')) tuning.advanced = [{ focusMode: 'continuous' }];
-    // A faster camera captures each symbol several times between content
-    // changes. Keep the opened resolution; finer grids need it more than speed.
-    if (settings.width && settings.height && capabilities.frameRate?.max >= 50 && !(settings.frameRate >= 50)) {
-      Object.assign(tuning, { width: { exact: settings.width }, height: { exact: settings.height }, frameRate: { ideal: 60 } });
+    if (track.getCapabilities?.().focusMode?.includes('continuous')) {
+      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
     }
-    if (Object.keys(tuning).length) track.applyConstraints(tuning).catch(() => {});
     video.playsInline = true;
     video.muted = true;
     video.srcObject = stream;

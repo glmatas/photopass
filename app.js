@@ -490,7 +490,7 @@ async function readLight() {
   el('light-sound-help').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=11');
+    const { startLightReceiver } = await import('./light-receiver.js?v=12');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
