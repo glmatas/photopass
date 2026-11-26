@@ -22,7 +22,7 @@ function matches(bytes, token, kind) {
   );
 }
 
-export function offerPickup(file, token, transfer, signal) {
+export function offerPickup(file, token, transfer, signal, onStatus) {
   let peer, round, accepted, timer;
   function clear() {
     clearTimeout(timer);
@@ -31,13 +31,20 @@ export function offerPickup(file, token, transfer, signal) {
     peer = undefined;
   }
   signal.addEventListener('abort', clear, { once: true });
+  function failed() {
+    clear();
+    onStatus('Direct connection unavailable. Screen transfer is running.');
+  }
   async function start() {
-    if (peer || signal.aborted || !globalThis.RTCPeerConnection) return;
+    if (peer || signal.aborted) return;
+    if (!globalThis.RTCPeerConnection) { onStatus('Phone tone received. Using screen transfer.'); return; }
+    onStatus('Phone tone received. Pairing for direct transfer…');
+    let sending = false;
     const current = new PhotoPeer({
-      onSent: clear,
-      onFailure: clear,
+      onSent() { clear(); onStatus('Phone verified the photo over the direct connection.'); },
+      onFailure: failed,
       onProgress() {
-        clearTimeout(timer);
+        if (!sending) { sending = true; clearTimeout(timer); onStatus('Sending the photo directly.'); }
       },
     });
     peer = current;
@@ -45,12 +52,12 @@ export function offerPickup(file, token, transfer, signal) {
       n.toString(16).padStart(8, '0'),
     ).join('');
     accepted = false;
-    timer = setTimeout(clear, 26000);
+    timer = setTimeout(failed, 26000);
     try {
       const description = await current.offer(file, { quickGather: true });
       if (peer === current) transfer.setOffer(message(token, OFFER, description, round));
     } catch {
-      if (peer === current) clear();
+      if (peer === current) failed();
     }
   }
   async function answer(bytes) {
@@ -60,16 +67,17 @@ export function offerPickup(file, token, transfer, signal) {
       const decoded = decodeCompact(bytes.subarray(token.length + 1), 'answer');
       if (decoded.session !== round) return;
       accepted = true;
+      onStatus('Phone reply received. Connecting directly…');
       transfer.setOffer();
       await current.accept(decoded.description);
     } catch {
-      if (accepted && peer === current) clear();
+      if (accepted && peer === current) failed();
     }
   }
   return { start, answer };
 }
 
-export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress) {
+export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress, onOffer) {
   let peer, lastRound, timer;
   function clear() {
     clearTimeout(timer);
@@ -80,6 +88,7 @@ export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress
   async function connect({ session, description }) {
     clear();
     lastRound = session;
+    onOffer();
     const current = new PhotoPeer({
       onPhoto(blob, name, digest) {
         if (peer !== current || signal.aborted) return;
@@ -103,12 +112,12 @@ export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress
       },
     });
     peer = current;
-    timer = setTimeout(clear, 20000);
+    timer = setTimeout(() => { clear(); onProgress(0); }, 20000);
     try {
       const descriptionAnswer = await current.answer(description, { quickGather: true });
       if (peer === current) sendAnswer(message(token, ANSWER, descriptionAnswer, session));
     } catch {
-      if (peer === current) clear();
+      if (peer === current) { clear(); onProgress(0); }
     }
   }
   return (bytes) => {

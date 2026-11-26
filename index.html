@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=11">
-  <script type="module" src="./app.js?v=11"></script>
+  <link rel="stylesheet" href="./style.css?v=12">
+  <script type="module" src="./app.js?v=12"></script>
 </head>
 <body>
   <header class="masthead">
@@ -102,6 +102,8 @@
             <canvas id="light-stream" role="img" aria-label="Moving square carrying your photo" hidden></canvas>
           </div>
           <button type="button" id="light-zoom" class="button secondary" aria-controls="light-stream" aria-pressed="false">Close enlarged view</button>
+          <p id="pickup-pair-status" class="support-text" role="status"></p>
+          <button type="button" id="pickup-mic-retry" class="reset-button" hidden>Retry kiosk microphone</button>
         </figure>
       </div>
     </section>
@@ -113,6 +115,8 @@
         <button type="button" id="light-start" class="button primary" hidden>Retry camera</button>
         <p id="light-label" class="support-text" role="status">Waiting for the camera…</p>
         <progress id="light-progress" max="100" value="0" aria-label="Photo received" aria-describedby="light-label"></progress>
+        <p id="phone-pair-status" class="support-text" role="status" hidden></p>
+        <button type="button" id="phone-tone" class="reset-button" hidden>Play pairing tone</button>
         <a id="light-sound-help" class="receiver-link" href="#listen" hidden>Receive by sound</a>
       </div>
       <div class="light-view">

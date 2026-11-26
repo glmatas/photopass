@@ -10,6 +10,7 @@ const live = process.argv.includes('--live');
 const dropRTC = process.argv.includes('--drop-rtc');
 const loseAnswer = process.argv.includes('--lose-answer');
 const brio = process.argv.includes('--brio');
+const retryTone = process.argv.includes('--retry-tone');
 const direct = !process.argv.includes('--no-rtc');
 const breakRTC = process.argv.includes('--break-rtc');
 const root = path.resolve(import.meta.dirname, '..');
@@ -87,9 +88,17 @@ try {
       },
     });
   }
-  function installFailures({ breakRTC, dropRTC, brio, loseAnswer }) {
+  function installFailures({ breakRTC, dropRTC, brio, loseAnswer, retryTone }) {
     if (!navigator.mediaDevices) return;
-    if (loseAnswer) {
+    if (retryTone) {
+      Object.defineProperty(navigator, 'audioSession', {value: { type:'auto' }, configurable:true});
+      const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {configurable:true, value:c => {
+        if (c.audio && !location.hash && !window.allowKioskMic) return Promise.reject(new DOMException('Test denied mic', 'NotAllowedError'));
+        return original(c);
+      }});
+    }
+    if (loseAnswer || retryTone) {
       window.Worker = new Proxy(window.Worker, {
         construct(WorkerType, args) {
           const worker = new WorkerType(...args);
@@ -97,13 +106,17 @@ try {
           const post = worker.postMessage.bind(worker);
           const muted = new Set();
           worker.postMessage = (msg, ...rest) => {
-            if (msg.kind === 'encode' && msg.bytes.length > 22 && msg.bytes[22] === 65) muted.add(msg.id);
+              if (msg.kind === 'encode') {
+                if (loseAnswer && msg.bytes.length > 22 && msg.bytes[22] === 65) muted.add(msg.id);
+                if (retryTone && window.simulateSilent && navigator.audioSession.type !== 'playback') muted.add(msg.id);
+              }
             return post(msg, ...rest);
           };
           worker.addEventListener('message', ({ data }) => {
             if (data.kind === 'wave' && muted.delete(data.id)) {
               data.pcm.fill(0);
               window.testAnswerLost = true;
+                window.mutedBursts = (window.mutedBursts || 0) + 1;
             }
           });
           return worker;
@@ -163,7 +176,7 @@ try {
   const setup = [
     [installDigitalAudio, { direct }],
     [installCamera, {}],
-    [installFailures, { breakRTC, dropRTC, brio, loseAnswer }],
+    [installFailures, { breakRTC, dropRTC, brio, loseAnswer, retryTone }],
   ];
   await ctx.addInitScript({
     content: setup
@@ -193,7 +206,7 @@ try {
     const frame = ctx.getImageData(0, 0, c.width, c.height);
     return decodeQR(frame.data, c.width, c.height).data;
   }, qrImage);
-  assert.match(link, /\?11#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
+  assert.match(link, /\?12#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
   const before = await kiosk.locator('.pickup-target').boundingBox();
   // Exercise an actual packet with incorrect session bytes on the same PCM bus.
   const wrong = await kiosk.evaluate(async (link) => {
@@ -229,7 +242,18 @@ try {
     await phone.locator('#light-receive-panel button:visible, #light-receive-panel a:visible').count(),
     0,
   );
-  await kiosk.waitForFunction(() => window.qaAudio.inputs.some((t) => t.readyState === 'live'));
+  if (retryTone) {
+    await kiosk.locator('#pickup-mic-retry').waitFor();
+    assert.match(await kiosk.locator('#pickup-pair-status').innerText(), /microphone unavailable/i);
+    await kiosk.evaluate(() => { window.allowKioskMic = true; });
+    await kiosk.locator('#pickup-mic-retry').click();
+  }
+  await kiosk.waitForFunction(() => document.querySelector('#pickup-pair-status').textContent.startsWith('Listening for'));
+  await kiosk.evaluate(() => {
+    const label = document.querySelector('#pickup-pair-status');
+    window.statusLog = [];
+    new MutationObserver(() => window.statusLog.push(label.textContent)).observe(label, {childList:true});
+  });
   await phone.evaluate(async (data) => {
     const { readyTone } = await import('./pickup.js');
     window.testLife = new AbortController();
@@ -239,10 +263,18 @@ try {
   assert(await kiosk.evaluate(() => window.qaBus.outputs.phone > 0));
   assert.notEqual(await kiosk.locator('#light-send-panel').getAttribute('data-pickup-state'), 'ready');
   const started = Date.now();
-  await phone.evaluate(() => {
+  await phone.evaluate(retry => {
     window.testLife.abort();
+    window.simulateSilent = retry;
     window.grant();
-  });
+  }, retryTone);
+  if (retryTone) {
+    await phone.locator('#phone-tone').waitFor();
+    assert((await phone.evaluate(() => window.mutedBursts)) >= 2);
+    assert.equal(await kiosk.locator('#light-send-panel').getAttribute('data-pickup-state'), 'broadcast');
+    assert.match(await kiosk.locator('#pickup-pair-status').innerText(), /Listening for/);
+    await phone.locator('#phone-tone').click();
+  }
   await kiosk.waitForFunction(
     () => document.getElementById('light-send-panel').dataset.pickupState === 'ready',
     null,
@@ -253,8 +285,14 @@ try {
   await phone.locator('#save-link').waitFor({ timeout: 100000 });
   const seconds = ((Date.now() - started) / 1000).toFixed(2);
   const bytes = await phone.evaluate(() => window.qaAudio.received);
-  if (direct && !breakRTC && !dropRTC && !loseAnswer)
+  const statuses = await kiosk.evaluate(() => window.statusLog);
+  assert(statuses.some(message => message.startsWith('Phone tone received.')));
+  if (retryTone) assert.equal(await phone.evaluate(() => navigator.audioSession.type), 'auto');
+  if (direct && !breakRTC && !dropRTC && !loseAnswer) {
     assert(bytes >= original.size, 'Direct channel should deliver the original.');
+    assert(statuses.includes('Phone reply received. Connecting directly…'));
+    assert(statuses.includes('Sending the photo directly.'));
+  }
   if (breakRTC)
     assert(
       await kiosk.evaluate(() => window.testNetworkBlocked),
@@ -265,7 +303,7 @@ try {
       (await phone.evaluate(() => window.testChannelLost)) && bytes > 0 && bytes < original.size,
       'Expected partial direct transfer and complete optical pickup.',
     );
-  if (brio) assert.deepEqual(await kiosk.evaluate(() => window.requestedInputs), ['desk', 'webcam']);
+  if (brio) assert.deepEqual(await kiosk.evaluate(() => window.requestedInputs), retryTone ? ['desk', 'desk', 'webcam'] : ['desk', 'webcam']);
   if (loseAnswer) assert((await phone.evaluate(() => window.testAnswerLost)) && bytes === 0);
   assert.deepEqual(await phone.evaluate(savedPhoto), original);
   assert.equal(await phone.evaluate(() => window.camCalls), 1);
@@ -295,7 +333,7 @@ try {
     brio,
     'camera grant to display:',
     seconds,
-    's. No guest clicks/mic. Resources released.',
+    's. Manual tone retry:', retryTone, 'No phone microphone. Resources released.',
   );
 } finally {
   await browser.close();

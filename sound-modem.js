@@ -202,7 +202,8 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
     catch (error) { listenError = error; releaseInput(); }
     if (closed) throw aborted();
     opened = true;
-    return {send, close, maxPacketSize, get listening() {return listening;}, get listenError() {return listenError;}};
+    return {send, close, maxPacketSize, get listening() {return listening;}, get listenError() {return listenError;},
+      get inputLabel() {return stream?.getAudioTracks()[0]?.label;}};
   } catch (error) {
     close();
     throw error;

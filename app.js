@@ -1,8 +1,8 @@
 import { PhotoPeer } from './peer.js?v=10';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js?v=11';
-import {receivePickup} from './pickup-direct.js?v=10';
+import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=12';
+import {receivePickup} from './pickup-direct.js?v=12';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
@@ -401,7 +401,7 @@ async function beginLight() {
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
     const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
-    url.search = '?11';
+    url.search = '?12';
     url.hash = lightHash(transfer.id) + '.' + nonce;
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -421,7 +421,10 @@ async function beginLight() {
       el('late-join').hidden = !streaming;
       el('light-stream').hidden = !streaming;
       el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
-    }, {file:picked, cameraGroup:selectedCameraGroup});
+    }, {
+      file:picked, cameraGroup:selectedCameraGroup, micRetry:el('pickup-mic-retry'),
+      onPairStatus(message) { el('pickup-pair-status').textContent = message; },
+    });
   } catch (error) {
     if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
   }
@@ -443,14 +446,8 @@ async function readLight() {
   let directProgress = 0;
   let cameraFailure;
   let cameraReadyAt;
-  let tone;
-  signal.addEventListener('abort', () => tone?.abort(), { once:true });
-  function playPacket(bytes) {
-    tone?.abort();
-    tone = new AbortController();
-    void readyTone(bytes, tone.signal);
-  }
   const token = pickupNonce && pickupPacket(lightId, pickupNonce);
+  const pair = token && phonePairing(token, signal, el('phone-pair-status'), el('phone-tone'));
   function finishPickup(blob, name, route) {
     if (signal.aborted) return;
     const seconds = (performance.now() - cameraReadyAt) / 1000;
@@ -460,18 +457,19 @@ async function readLight() {
       ? ' in ' + seconds.toFixed(1) + ' s (' + Math.round(blob.size / (1000 * seconds)) + ' KB/s)' : '';
     el('done-description').textContent = 'Received' + timing + ' ' + route + '. Save the original before closing this tab.';
   }
-  const onControl = token && receivePickup(token, lightId, signal, playPacket, (blob, name) => {
+  const onControl = token && receivePickup(token, lightId, signal, pair.play, (blob, name) => {
     finishPickup(blob, name, 'by direct connection');
   }, fraction => {
-    directProgress = fraction;
     if (signal.aborted) return;
+    if (!directProgress || !fraction) pair.direct(fraction > 0);
+    directProgress = fraction;
     if (!fraction && cameraFailure) { cameraError(cameraFailure); return; }
     if (fraction > previousProgress || fraction === 0) {
       const amount = Math.floor(100 * Math.max(fraction, previousProgress));
       el('light-progress').value = amount;
       el('light-label').textContent = amount + '% received · ' + (fraction ? 'Receiving directly.' : 'Keep the whole kiosk square in view.');
     }
-  });
+  }, pair.offer);
   function cameraError(message) {
     if (signal.aborted) return;
     stopLight();
@@ -497,7 +495,7 @@ async function readLight() {
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,
       onControl,
-      onCameraReady() { cameraReadyAt = performance.now(); },
+      onCameraReady() { cameraReadyAt = performance.now(); pair?.play(token); },
       signal,
       onProgress(fraction) {
         if (signal.aborted) return;
@@ -525,7 +523,6 @@ async function readLight() {
     if (signal.aborted || page !== 'light-receive') release();
     else {
       lightReceiver = release;
-      if (token) playPacket(token);
       if (!previousProgress && !directProgress) el('light-label').textContent = 'Camera ready. Keep the whole kiosk square in view.';
       hintAfterPause();
     }
@@ -833,7 +830,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7', '?8', '?9', '?10', '?11'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8', '?9', '?10', '?11', '?12'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }
