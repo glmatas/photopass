@@ -1,7 +1,7 @@
 import { PhotoPeer } from './peer.js?v=10';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=13';
+import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=14';
 import {receivePickup} from './pickup-direct.js?v=12';
 
 const el = id => document.getElementById(id);
@@ -401,7 +401,7 @@ async function beginLight() {
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
     const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
-    url.search = '?13';
+    url.search = '?14';
     url.hash = lightHash(transfer.id) + '.' + nonce;
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -830,7 +830,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7', '?8', '?9', '?10', '?11', '?12', '?13'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8', '?9', '?10', '?11', '?12', '?13', '?14'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }

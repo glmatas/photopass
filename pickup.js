@@ -11,7 +11,7 @@ export async function readyTone(packet, signal, onReady, {
 } = {}) {
   if (signal.aborted) return;
   const Context = window.AudioContext || window.webkitAudioContext;
-  if (!Context) { onUnavailable?.(); return; }
+  if (!Context) { onUnavailable?.(new Error('This browser cannot run the pairing audio.')); return; }
   const life = new AbortController();
   let context, modem, timeout, retry, resumeTimer, awaitingOutput = false;
   const unlock = () => { if (context?.state === 'suspended') context.resume().catch(() => {}); };
@@ -30,7 +30,7 @@ export async function readyTone(packet, signal, onReady, {
     if (signal.aborted || life.signal.aborted) return;
     close();
     if (onWaitingForTap && (error?.name === 'NotAllowedError' || (awaitingOutput && !error))) onWaitingForTap();
-    else onUnavailable?.();
+    else onUnavailable?.(error);
   }
   signal.addEventListener('abort', close, {once:true});
   try {
@@ -61,7 +61,7 @@ export async function readyTone(packet, signal, onReady, {
         else if (!life.signal.aborted) onMessage?.(bytes);
       },
     });
-    if (onReady && !modem.listening) { unavailable(); return; }
+    if (onReady && !modem.listening) { unavailable(modem.listenError); return; }
     await resumed;
     if (life.signal.aborted) return;
     if (onReady) { clearTimeout(timeout); onListening?.(modem.inputLabel); return; }
@@ -181,8 +181,23 @@ export function startPickupDisplay(transfer, packet, render, { file, cameraGroup
     void readyTone(packet, life.signal, heard, {
       cameraGroup,
       onListening: label => onPairStatus(label ? 'Listening for the phone on ' + label + '.' : 'Listening for the phone’s pairing tone.'),
-      onUnavailable() {
-        onPairStatus('Microphone unavailable. Allow microphone access on the kiosk for direct pairing.');
+      onUnavailable(error) {
+        const isWindows = /Win/i.test(navigator.userAgentData?.platform || navigator.platform);
+        let message;
+        if (error?.name === 'NotAllowedError' && /by system|operating system/i.test(error.message)) {
+          message = isWindows
+            ? 'Windows blocked the microphone. In Settings > Privacy & security > Microphone, turn on desktop app access, then retry.'
+            : 'The operating system blocked the microphone. Allow microphone access for this browser in system settings, then retry.';
+        } else if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+          message = 'Microphone access was denied. Allow the microphone for this site in the kiosk browser, then retry.';
+        } else if (error?.name === 'NotFoundError') {
+          message = 'The kiosk browser found no microphone. Connect the webcam or microphone, then retry.';
+        } else if (error?.name === 'NotReadableError') {
+          message = 'The browser could not open the kiosk microphone. Check the selected input and close any app holding it, then retry.';
+        } else {
+          message = error?.message || 'The kiosk audio input did not start. Check the microphone and retry.';
+        }
+        onPairStatus(message);
         micRetry.hidden = false;
       },
       onMessage: bytes => { void direct?.then(attempt => attempt?.answer(bytes)); },

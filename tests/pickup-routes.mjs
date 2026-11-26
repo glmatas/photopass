@@ -11,6 +11,7 @@ const dropRTC = process.argv.includes('--drop-rtc');
 const loseAnswer = process.argv.includes('--lose-answer');
 const brio = process.argv.includes('--brio');
 const retryTone = process.argv.includes('--retry-tone');
+const systemDenied = process.argv.includes('--system-denied');
 const silentPhone = retryTone || process.argv.includes('--silent-iphone');
 const direct = !process.argv.includes('--no-rtc');
 const breakRTC = process.argv.includes('--break-rtc');
@@ -89,7 +90,7 @@ try {
       },
     });
   }
-  function installFailures({ breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone }) {
+  function installFailures({ breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone, systemDenied }) {
     if (!navigator.mediaDevices) return;
     if (silentPhone) {
       Object.defineProperty(navigator, 'audioSession', {value: { type:'auto' }, configurable:true});
@@ -125,9 +126,13 @@ try {
           return ctx;
         },
       });
+    }
+    if (systemDenied || retryTone) {
       const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {configurable:true, value:c => {
-        if (c.audio && !location.hash && !window.allowKioskMic) return Promise.reject(new DOMException('Test denied mic', 'NotAllowedError'));
+        if (c.audio && !location.hash && !window.allowKioskMic) {
+          return Promise.reject(new DOMException(systemDenied ? 'Permission denied by system' : 'Permission denied', 'NotAllowedError'));
+        }
         return original(c);
       }});
     }
@@ -205,7 +210,7 @@ try {
   const setup = [
     [installDigitalAudio, { direct }],
     [installCamera, {}],
-    [installFailures, { breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone }],
+    [installFailures, { breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone, systemDenied }],
   ];
   await ctx.addInitScript({
     content: setup
@@ -235,8 +240,7 @@ try {
     const frame = ctx.getImageData(0, 0, c.width, c.height);
     return decodeQR(frame.data, c.width, c.height).data;
   }, qrImage);
-  assert.match(link, /\?13#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
-  const before = await kiosk.locator('.pickup-target').boundingBox();
+  assert.match(link, /\?14#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
   // Exercise an actual packet with incorrect session bytes on the same PCM bus.
   const wrong = await kiosk.evaluate(async (link) => {
     const { readyTone, pickupPacket } = await import('./pickup.js');
@@ -271,13 +275,17 @@ try {
     await phone.locator('#light-receive-panel button:visible, #light-receive-panel a:visible').count(),
     0,
   );
-  if (retryTone) {
+  if (systemDenied || retryTone) {
     await kiosk.locator('#pickup-mic-retry').waitFor();
-    assert.match(await kiosk.locator('#pickup-pair-status').innerText(), /microphone unavailable/i);
+    assert.match(await kiosk.locator('#pickup-pair-status').innerText(),
+      systemDenied ? /Windows blocked the microphone|operating system blocked the microphone/i : /allow the microphone for this site/i);
     await kiosk.evaluate(() => { window.allowKioskMic = true; });
     await kiosk.locator('#pickup-mic-retry').click();
   }
   await kiosk.waitForFunction(() => document.querySelector('#pickup-pair-status').textContent.startsWith('Listening for'));
+  // Retrying the microphone can scroll the kiosk. Check the square across the
+  // automatic join-to-stream transition after the operator's last interaction.
+  const before = await kiosk.locator('.pickup-target').boundingBox();
   await kiosk.evaluate(() => {
     const label = document.querySelector('#pickup-pair-status');
     window.statusLog = [];
@@ -353,7 +361,7 @@ try {
       (await phone.evaluate(() => window.testChannelLost)) && bytes > 0 && bytes < original.size,
       'Expected partial direct transfer and complete optical pickup.',
     );
-  if (brio) assert.deepEqual(await kiosk.evaluate(() => window.requestedInputs), retryTone ? ['desk', 'desk', 'webcam'] : ['desk', 'webcam']);
+  if (brio) assert.deepEqual(await kiosk.evaluate(() => window.requestedInputs), (retryTone || systemDenied) ? ['desk', 'desk', 'webcam'] : ['desk', 'webcam']);
   if (loseAnswer) assert((await phone.evaluate(() => window.testAnswerLost)) && bytes === 0);
   assert.deepEqual(await phone.evaluate(savedPhoto), original);
   assert.equal(await phone.evaluate(() => window.camCalls), 1);
