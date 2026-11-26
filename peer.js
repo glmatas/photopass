@@ -82,6 +82,14 @@ function gatheredDescription(session) {
   return { type: desc.type, sdp: lines.join(eol) };
 }
 
+// RFC 1918 and the shared 100.64.0.0/10 range (carrier NAT, Tailscale).
+function privateIPv4(address) {
+  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(address);
+  if (!m) return false;
+  const [a, b] = [+m[1], +m[2]];
+  return a === 10 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b < 128);
+}
+
 function gather(session) {
   const { pc, signal } = session;
   return new Promise((resolve, reject) => {
@@ -166,20 +174,28 @@ export class PhotoPeer {
   // A short field-diagnosis code: connection states and candidate counts.
   // Candidate kinds: h4/h6 = raw IPv4/IPv6 host, hm = mDNS host, s = server
   // reflexive, p = peer reflexive, r = relay; a trailing t marks TCP.
+  // Private IPv4 host addresses add their /24 prefix, e.g. "192.168.1.x",
+  // so a field report shows whether both sides share a LAN. "held" marks
+  // offer candidates the phone has not used yet.
   describe() {
-    const pc = this.session?.pc;
+    const s = this.session;
+    const pc = s?.pc;
     if (!pc) return "";
     const kinds = sdp => {
-      const counts = {};
+      const counts = {}, nets = new Set();
       for (const [, transport, address, type] of (sdp || "").matchAll(/^a=candidate:\S+ \d+ (\S+) \d+ (\S+) \d+ typ (\w+)/gim)) {
         const kind = (type === "host" ? (address.endsWith(".local") ? "hm" : address.includes(":") ? "h6" : "h4") : type[0]) +
           (/^tcp$/i.test(transport) ? "t" : "");
         counts[kind] = (counts[kind] || 0) + 1;
+        if (kind[0] === "h" && privateIPv4(address)) nets.add(address.replace(/\.\d+$/, ".x"));
       }
-      return Object.entries(counts).map(([kind, n]) => kind + "=" + n).join(" ") || "none";
+      const text = Object.entries(counts).map(([kind, n]) => kind + "=" + n).join(" ") || "none";
+      return nets.size ? text + " (" + [...nets].join(" ") + ")" : text;
     };
+    const held = s.heldCandidates?.map(c => "a=" + c.candidate).join("\n");
     return "ice " + pc.iceConnectionState + ", dtls " + (pc.sctp?.transport?.state ?? "-") +
-      ", local " + kinds(pc.localDescription?.sdp) + ", remote " + kinds(pc.remoteDescription?.sdp);
+      ", local " + kinds(pc.localDescription?.sdp) +
+      ", remote " + kinds(held ?? pc.remoteDescription?.sdp) + (held ? " held" : "");
   }
 
   _fail(s, message) {
@@ -251,8 +267,12 @@ export class PhotoPeer {
     }
   }
 
-  async answer(offer, { quickGather = false } = {}) {
-    const remote = checkDescription(offer, "offer");
+  // holdCandidates: apply the offer without its ICE candidates, so this side
+  // sends no connectivity checks until releaseCandidates(). The offerer's own
+  // checks still connect at once when it applies the answer. A delayed answer
+  // then cannot time out against a firewall that drops unsolicited packets.
+  async answer(offer, { quickGather = false, holdCandidates = false } = {}) {
+    let remote = checkDescription(offer, "offer");
     const s = this._start("receiver");
     s.quickGather = quickGather;
     try {
@@ -260,6 +280,18 @@ export class PhotoPeer {
         if (this.session !== s || s.channel || event.channel.label !== "photo-v1") return event.channel.close();
         this._channel(s, event.channel);
       };
+      if (holdCandidates) {
+        const held = [];
+        let section = -1;
+        const lines = remote.sdp.split("\n").filter(raw => {
+          const line = raw.replace(/\r$/, "");
+          if (line.startsWith("m=")) section++;
+          if (line.startsWith("a=candidate:")) { held.push({ candidate: line.slice(2), sdpMLineIndex: section }); return false; }
+          return line !== "a=end-of-candidates";
+        });
+        s.heldCandidates = held;
+        remote = { type: "offer", sdp: lines.join("\n") };
+      }
       await s.pc.setRemoteDescription(remote);
       await s.pc.setLocalDescription(await s.pc.createAnswer());
       const desc = await gather(s);
@@ -268,6 +300,18 @@ export class PhotoPeer {
     } catch (error) {
       if (this.session === s) this.close();
       throw error;
+    }
+  }
+
+  // Start this side's own connectivity checks with the offer's held candidates.
+  async releaseCandidates() {
+    const s = this.session;
+    const held = s?.heldCandidates;
+    if (!held) return;
+    s.heldCandidates = null;
+    for (const candidate of held) {
+      if (this.session !== s) return;
+      try { await s.pc.addIceCandidate(candidate); } catch { /* Skip a candidate this browser rejects. */ }
     }
   }
 

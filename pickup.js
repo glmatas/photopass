@@ -195,7 +195,7 @@ export function startPickupDisplay(transfer, packet, render, { file, cameraGroup
   const timer = setTimeout(() => stream(false), 5000);
   function heard() {
     stream(true);
-    direct ??= import('./pickup-direct.js?v=13').then(({offerPickup}) =>
+    direct ??= import('./pickup-direct.js?v=14').then(({offerPickup}) =>
       life.signal.aborted ? undefined : offerPickup(file, packet, transfer, life.signal, onPairStatus)).catch(() => {
         if (!life.signal.aborted) onPairStatus('Phone tone received. Using screen transfer.');
       });

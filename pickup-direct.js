@@ -1,4 +1,4 @@
-import { PhotoPeer } from './peer.js?v=11';
+import { PhotoPeer } from './peer.js?v=12';
 import { decodeCompact, encodeCompact } from './signal-codec.js';
 
 // The existing camera reads offers between photo frames. A phone's speaker
@@ -12,6 +12,9 @@ const limit = 1200;
 // and two plays of the reply, then gives the network its own connection budget.
 const REPLY_MS = 60000,
   CONNECT_MS = 30000;
+// Two plays of a reply (about 22 ms a byte plus 0.42 s each, 1 s apart) and a
+// 2 s margin for the kiosk to decode and start its checks.
+const RELEASE_MS = bytes => 2 * (22 * bytes + 420) + 3000;
 const FAILED = {
   reply: 'No pairing reply reached the kiosk. Screen transfer is running.',
   network: 'Phone reply received, but the direct network connection failed. Screen transfer is running.',
@@ -133,9 +136,10 @@ export function offerPickup(file, token, transfer, signal, onStatus) {
 }
 
 export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress, onOffer) {
-  let peer, lastRound, timer, answeredAt;
+  let peer, lastRound, timer, release, answeredAt;
   function clear() {
     clearTimeout(timer);
+    clearTimeout(release);
     peer?.close();
     peer = undefined;
   }
@@ -173,10 +177,17 @@ export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress
     // Allow for two plays of the reply and the kiosk's network budget.
     timer = setTimeout(() => { if (peer === current) stop('reply'); }, REPLY_MS);
     try {
-      const descriptionAnswer = await current.answer(description, { quickGather: true });
+      // Hold the kiosk's candidates: a kiosk firewall (e.g. a Windows Public
+      // network) drops the phone's checks until the kiosk itself has sent to
+      // the phone, and a phone that keeps checking during the reply tone gives
+      // up before the kiosk has decoded it. Held, the phone answers the kiosk's
+      // own checks instead. After both reply plays it starts its own checks too.
+      const descriptionAnswer = await current.answer(description, { quickGather: true, holdCandidates: true });
       if (peer !== current) return;
       answeredAt = performance.now();
-      sendAnswer(answerMessage(token, descriptionAnswer, session));
+      const reply = answerMessage(token, descriptionAnswer, session);
+      sendAnswer(reply);
+      release = setTimeout(() => { if (peer === current) void current.releaseCandidates(); }, RELEASE_MS(reply.length));
     } catch {
       if (peer === current) stop('start');
     }
