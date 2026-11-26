@@ -1,6 +1,7 @@
 // Systematic Cauchy erasure code over GF(256). Keep groups small enough for
-// a phone to repair missing packets while camera frames are still arriving.
-const groupSize = 48;
+// a phone to repair missing packets while camera frames are still arriving,
+// and large enough that the slowest group adds little overhead.
+const groupSize = 128;
 // Version 40-L has 2,953 binary bytes. Reserve 12 for the photo ID, six
 // for the H7 marker and checksum, and 20 for the common frame header.
 export const highBlockBytes = 2915;
@@ -17,16 +18,19 @@ const products = Array.from({length:256}, (_, a) =>
   Uint8Array.from({length:256}, (_, b) => a && b ? exp[log[a] + log[b]] : 0));
 
 function geometry(k, seq) {
+  // Equal groups finish together instead of waiting on full groups while a
+  // short final group repeats rows nobody needs.
   const groups = Math.ceil(k / groupSize);
+  const base = Math.floor(k / groups), extra = k % groups;
   const n = seq & 0x1fffffff;
   const pass = Math.floor(n / groups);
   // Rotate group order between sweeps so periodic camera drops move around.
   // Reduce before multiplying to keep the triangular offset an exact integer.
   const cycle = pass % (2 * groups);
   const group = (n % groups + cycle * (cycle + 1) / 2) % groups;
-  const first = group * groupSize;
+  const first = group * base + Math.min(group, extra);
   const layer = seq >>> 30 === 2 ? 0 : 1 + ((seq >>> 29) & 1);
-  return {first, count:Math.min(groupSize, k - first), row:(pass * 3 + layer) % 256};
+  return {first, count:base + (group < extra), row:(pass * 3 + layer) % 256};
 }
 function coefficients(count, row) {
   const weights = new Uint8Array(count);

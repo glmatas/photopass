@@ -392,7 +392,7 @@ async function beginLight() {
   const current = generation;
   working('Preparing your photo', 'Making the pickup code…');
   try {
-    const { prepareLightSender } = await import('./light-sender.js?v=10');
+    const { prepareLightSender } = await import('./light-sender.js?v=11');
     if (current !== generation) return;
     const transfer = await prepareLightSender(picked, el('light-stream'), {
       onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
@@ -490,7 +490,7 @@ async function readLight() {
   el('light-sound-help').hidden = true;
   el('light-label').textContent = 'Allow the camera, then point it at the moving code.';
   try {
-    const { startLightReceiver } = await import('./light-receiver.js?v=10');
+    const { startLightReceiver } = await import('./light-receiver.js?v=11');
     if (signal.aborted) return;
     const release = await startLightReceiver(el('light-video'), {
       id: lightId,

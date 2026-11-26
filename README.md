@@ -32,9 +32,9 @@ The short link identifies the visitor’s photo. Each moving frame carries part 
 
 **High speed** is the default. Under **Kiosk options**, use **Enlarge square** if a phone has trouble resolving the grid. Keep all four corners in view. The phone reports which route delivered the verified photo, elapsed time from the live camera preview to verification, and average KB/s. Changing into or out of High speed restarts collection.
 
-High speed targets 30 frames/s, with up to three independently checked 2,915-byte packets per frame. Brightness, warm/cool tint and green/magenta tint carry different packets. Brightness alone can deliver the entire file. A receiver backs off a color layer that repeatedly fails. Groups of up to 48 source packets use a systematic Cauchy erasure code over GF(256). Any 48 distinct valid rows recover a full group, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
+High speed shows 20 black-and-white frames/s, each carrying one checked 2,915-byte packet. Each frame stays on screen for a whole number of display refreshes, so a 30 frames/s phone camera can capture almost every frame without catching a change partway through its exposure. When the camera supports 60 frames/s at the same resolution, the phone switches to it automatically. Once the phone finds the square, it reads only that area at the camera's full resolution. The file is split into equal groups of up to 128 source packets, each protected by a systematic Cauchy erasure code over GF(256). Any set of distinct valid rows as large as the group recovers it, including for a visitor who joins partway through the broadcast. For development, `node tests/light-repair.mjs` exercises this recovery through the 32 MiB file limit.
 
-The density and refresh choices draw on Decimen's version-40 QR guidance. HiQ documents how lighting and interference between colors affect phone decoding. For a full-size high-speed frame, PhotoPass locates the brightness QR, samples each cell center in the same camera exposure and uses the three finder patterns to calibrate the colors. The high-speed packet format is specific to PhotoPass. All modes verify the original file with SHA-256. [Decimen transmission settings](https://github.com/bashalarmistalt/decimen-optical-transfer/blob/main/docs/user/sending.md) · [HiQ mobile color QR research](https://arxiv.org/abs/1704.06447) · [Erasure coding background](https://www.rfc-editor.org/rfc/rfc5510)
+The density and refresh choices draw on Decimen's version-40 QR guidance. HiQ documents how lighting and interference between colors affect phone decoding. In real-camera tests at the design footprint, tinted color layers in a version-40 grid did not survive camera color processing and lowered brightness contrast, so High speed uses brightness only. The high-speed packet format is specific to PhotoPass. All modes verify the original file with SHA-256. [Decimen transmission settings](https://github.com/bashalarmistalt/decimen-optical-transfer/blob/main/docs/user/sending.md) · [HiQ mobile color QR research](https://arxiv.org/abs/1704.06447) · [Erasure coding background](https://www.rfc-editor.org/rfc/rfc5510)
 
 #### Reproduce the camera benchmark
 
@@ -46,6 +46,8 @@ node tests/optical-benchmark.mjs --field-size --fixed --textured --fast
 ```
 
 Add `--impaired` to both commands to hold one in five camera updates, apply a 0.4-pixel blur, and reduce contrast and saturation. Use `--gray` to remove color completely. For a venue measurement, send the same original in both modes using the same phone, kiosk, distance and lighting. Compare the elapsed times shown on the phone.
+
+To measure a physical camera, point a webcam at a monitor and run `node tests/real/real-optical.mjs --mode high --runs 3` on that computer. The script finds the monitor the webcam sees and shows the kiosk there full screen. It receives through the webcam and logs time to the verified SHA-256, KB/s, camera frame rate and decode rates under `tests/real/results/`. Add `--enlarge` when the webcam is farther away than a phone would be. It never opens a microphone.
 
 The following tests run the full pickup using digital speaker-to-microphone audio and camera pixels. They hold camera permission, send a wrong-session tone, grant permission, and verify the original bytes and released devices. The second command rejects the network handshake. The third closes an active direct channel after 160 KiB. The optical benchmark above runs with audio unavailable.
 
@@ -60,7 +62,7 @@ With Playwright's Firefox and WebKit engines installed, run `node tests/browser-
 
 Under **Transfer speed**, **Four colors** uses a lower-density grid. Brightness carries the complete stream and a warm/cool layer carries a second packet. A checksum covers each color packet, and the receiver spends less time checking color after repeated misses. Switching between Four colors and Black and white keeps the phone's collected packets. **Larger squares** further reduces the density and restarts collection.
 
-In Black and white, the display can send up to 24 frames per second carrying up to 1,433 file bytes each. Even perfect capture in this mode needs about five minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
+In Black and white, the display sends 20 frames per second carrying up to 1,433 file bytes each. Even perfect capture in this mode needs about six minutes for 10 MB, before recovery overhead. Actual time depends on focus, motion, reflections, camera frame rate and decoder speed. The page estimates remaining time from observed progress.
 
 ## Many kiosks, one receiver URL
 

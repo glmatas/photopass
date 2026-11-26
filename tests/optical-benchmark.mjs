@@ -243,8 +243,12 @@ try {
   if (args.has('--color') || args.has('--fast')) {
     const counts = await phone.evaluate(() => [window.qa.colorReads || 0, window.qa.colorHits || 0]);
     console.log('Color worker reads / decoded packets', counts);
-    assert(counts[0] > 0);
-    assert(args.has('--gray') ? counts[1] === 0 : counts[1] > 0);
+    // High speed is brightness only, so it never starts a color reader.
+    if (args.has('--fast')) assert.deepEqual(counts, [0, 0]);
+    else {
+      assert(counts[0] > 0);
+      assert(args.has('--gray') ? counts[1] === 0 : counts[1] > 0);
+    }
   }
   const downloadEvent = phone.waitForEvent('download');
   await phone.locator('#save-link').click();

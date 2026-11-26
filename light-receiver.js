@@ -1,7 +1,7 @@
 import { LTDecoder, fnv1a, parseFrame, streamIdentity, unpackFile } from './vendor/optical/core.js';
 import { decodeQR } from './vendor/qr-codecs.js';
 import { restoreColor } from './light-color.js?v=8';
-import { highBlockBytes, RepairDecoder } from './light-repair.js';
+import { highBlockBytes, RepairDecoder } from './light-repair.js?v=2';
 
 const MAX_BYTES = 32 * 1024 * 1024;
 const HEADER_BYTES = 49;
@@ -60,10 +60,13 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new Error('This browser cannot read camera frames.');
   const workers = [];
-  let colorHeader, highColor = false;
-  const colors = [false, true].map(green => ({green, worker:null, busy:false, disabled:false, next:0, failures:0}));
+  // Four colors adds one warm/cool packet. High speed is brightness only.
+  let colorHeader;
+  const colors = [{worker:null, busy:false, disabled:false, next:0, failures:0}];
   let stream, nextFrame, decoder, identity, verify = false, closed = false;
   let seq = 0, misses = 0, lastSeen = 0, lastTime = -1, lastProgress = 0;
+  // Video-space bounds of the square in the last accepted capture.
+  let roi;
   let cancelStartup;
   let firstPacketAt;
   const stopped = new Promise((_, reject) => { cancelStartup = reject; });
@@ -141,10 +144,7 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
       onProgress?.(0);
     }
     lastSeen = now;
-    if (h.seq >>> 30 !== 3) {
-      colorHeader = h.seq >>> 30 === 2 ? h : undefined;
-      highColor = highSpeed;
-    }
+    if (h.seq >>> 30 !== 3) colorHeader = h.seq >>> 30 === 2 && !highSpeed ? h : undefined;
     decoder.addFrame(h.seq, frame.block);
     if (decoder.isComplete) {
       const payload = decoder.assemble();
@@ -161,20 +161,18 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
     try {
       const bytes = raw && !(raw instanceof Uint8Array) ? new Uint8Array(raw) : raw;
       if (bytes?.[0] === 80 && bytes[1] === 80 && onControl?.(bytes)) return;
-      misses = receive(bytes) ? 0 : Math.min(misses + 1, 30);
+      const accepted = receive(bytes);
+      misses = accepted ? 0 : Math.min(misses + 1, 30);
+      return accepted;
     } catch (error) { fail(error); }
   }
   function makeWorker() {
-    const instance = new Worker(new URL('./vendor/optical/reader-worker.js?v=8', import.meta.url), { type: 'module' });
+    const instance = new Worker(new URL('./vendor/optical/reader-worker.js?v=9', import.meta.url), { type: 'module' });
     const slot = { instance, busy: false, started: 0 };
     instance.onmessage = ({ data }) => {
       if (data.id < 0) return;
       slot.busy = false;
-      decoded(data.bytes);
-      if (!closed && !verify && data.buf && highColor && colorHeader?.blockLen === highBlockBytes) {
-        const rgba = new Uint8ClampedArray(data.buf);
-        for (const layer of colors) tryColor(layer, rgba, data.w, data.h, data.quad);
-      }
+      if (decoded(data.bytes) && data.quad && slot.region) track(data.quad, slot.region);
     };
     const discard = () => {
       const i = workers.indexOf(slot);
@@ -186,9 +184,15 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
     slot.discard = discard;
     workers.push(slot);
   }
-  function tryColor(layer, pixels, w, h, quad) {
-    if (!colorHeader || (layer.green && (!highColor || navigator.hardwareConcurrency <= 2)) ||
-        layer.busy || layer.disabled || seq < layer.next || performance.now() - lastSeen > 1200) return;
+  function track(quad, {sx, sy, scale}) {
+    const points = [quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft];
+    if (!points.every(p => Number.isFinite(p?.x) && Number.isFinite(p?.y))) return;
+    const xs = points.map(p => sx + p.x / scale), ys = points.map(p => sy + p.y / scale);
+    const x = Math.min(...xs), y = Math.min(...ys);
+    roi = {x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y, at: performance.now()};
+  }
+  function tryColor(layer, pixels, w, h) {
+    if (!colorHeader || layer.busy || layer.disabled || seq < layer.next || performance.now() - lastSeen > 1200) return;
     const disable = () => {
       layer.worker?.terminate();
       layer.worker = null;
@@ -201,8 +205,8 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
         layer.worker.onmessage = ({data}) => {
           if (data.id < 0 || closed || verify) return;
           layer.busy = false;
-          const bytes = restoreColor(data.bytes, expected, colorHeader, highColor);
-          if (bytes && receive(bytes, highColor)) layer.failures = 0;
+          const bytes = restoreColor(data.bytes, expected, colorHeader);
+          if (bytes && receive(bytes)) layer.failures = 0;
           else layer.failures = Math.min(8, layer.failures + 1);
           const minimumGap = navigator.hardwareConcurrency <= 2 ? 4 : 1;
           layer.next = seq + Math.max(minimumGap, 1 << Math.max(0, layer.failures - 3));
@@ -210,7 +214,7 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
       }
       const copy = pixels.slice();
       layer.busy = true;
-      layer.worker.postMessage({id:seq, buf:copy.buffer, w, h, green:layer.green, quad}, [copy.buffer]);
+      layer.worker.postMessage({id:seq, buf:copy.buffer, w, h, green:false}, [copy.buffer]);
     } catch { disable(); }
   }
   function loop() {
@@ -226,10 +230,19 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
     // view, a stronger but unrelated QR need not monopolize every decode.
     const view = misses >= 3 ? seq % 7 : 0;
     const horizontal = view === 2 || view === 3, vertical = view === 4 || view === 5;
-    const sw = vw * (horizontal ? 0.62 : view === 1 ? 0.76 : 1);
-    const sh = vh * (vertical ? 0.62 : view === 1 ? 0.76 : 1);
-    const sx = (vw - sw) * (view === 2 ? 0 : view === 3 ? 1 : 0.5);
-    const sy = (vh - sh) * (view === 4 ? 0 : view === 5 ? 1 : 0.5);
+    let sw = vw * (horizontal ? 0.62 : view === 1 ? 0.76 : 1);
+    let sh = vh * (vertical ? 0.62 : view === 1 ? 0.76 : 1);
+    let sx = (vw - sw) * (view === 2 ? 0 : view === 3 ? 1 : 0.5);
+    let sy = (vh - sh) * (view === 4 ? 0 : view === 5 ? 1 : 0.5);
+    // While the square stays in view, read only its neighborhood at the
+    // camera's full resolution instead of a downscaled complete frame.
+    if (roi && performance.now() - roi.at < 1500 && (misses < 10 || seq % 3)) {
+      const pad = 0.25 * Math.max(roi.w, roi.h);
+      sx = Math.max(0, Math.floor(roi.x - pad));
+      sy = Math.max(0, Math.floor(roi.y - pad));
+      sw = Math.min(vw, Math.ceil(roi.x + roi.w + pad)) - sx;
+      sh = Math.min(vh, Math.ceil(roi.y + roi.h + pad)) - sy;
+    }
     const scale = Math.min(1, 1440 / Math.max(sw, sh));
     const w = Math.round(sw * scale), h = Math.round(sh * scale);
     try {
@@ -240,9 +253,9 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
       if (slot && !(misses >= 10 && seq % 10 === 0)) {
         slot.busy = true;
         slot.started = performance.now();
-        const returnPixels = highColor && colorHeader?.blockLen === highBlockBytes;
-        if (!returnPixels) for (const layer of colors) tryColor(layer, pixels, w, h);
-        slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h, returnPixels }, [pixels.buffer]);
+        slot.region = {sx, sy, scale};
+        for (const layer of colors) tryColor(layer, pixels, w, h);
+        slot.instance.postMessage({ id: seq, buf: pixels.buffer, w, h }, [pixels.buffer]);
       } else {
         // Some WebKit versions run module workers but cannot instantiate this
         // WASM build. Periodic raw-byte JS decoding also covers that path.
@@ -267,9 +280,15 @@ export async function startLightReceiver(video, { id, onCameraReady, onControl, 
     track.addEventListener('ended', () => {
       if (!verify) fail(new Error('Camera disconnected. Open the camera again.'));
     }, { once: true });
-    if (track.getCapabilities?.().focusMode?.includes('continuous')) {
-      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+    const capabilities = track.getCapabilities?.() || {}, settings = track.getSettings?.() || {};
+    const tuning = {};
+    if (capabilities.focusMode?.includes('continuous')) tuning.advanced = [{ focusMode: 'continuous' }];
+    // A faster camera captures each symbol several times between content
+    // changes. Keep the opened resolution; finer grids need it more than speed.
+    if (settings.width && settings.height && capabilities.frameRate?.max >= 50 && !(settings.frameRate >= 50)) {
+      Object.assign(tuning, { width: { exact: settings.width }, height: { exact: settings.height }, frameRate: { ideal: 60 } });
     }
+    if (Object.keys(tuning).length) track.applyConstraints(tuning).catch(() => {});
     video.playsInline = true;
     video.muted = true;
     video.srcObject = stream;

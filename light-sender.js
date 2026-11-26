@@ -1,7 +1,7 @@
 import { fnv1a, HEADER_LEN, LTEncoder, packFile, packFrame } from './vendor/optical/core.js';
 import { createQR, rasterizeQr } from './vendor/optical/render.js';
 import { colorFlag, colorPacket, paintColor } from './light-color.js?v=8';
-import { highBlockBytes, repairEncoder } from './light-repair.js';
+import { highBlockBytes, repairEncoder } from './light-repair.js?v=2';
 
 const maxFileBytes = 32 * 1024 * 1024;
 const idLength = 12;
@@ -40,7 +40,8 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
   let highSequence = 0;
   let version;
   let animation;
-  let nextFrame = 0;
+  let lastDraw = -Infinity, lastTick = 0, refresh = 1000 / 60;
+  const deltas = [];
   let offerCanvas, nextOfferAt = 0, offerUntil = 0;
 
   function setOffer(bytes) {
@@ -71,17 +72,19 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     if (!container || largeSquares === Boolean(enabled)) return;
     largeSquares = Boolean(enabled);
     configure();
-    nextFrame = performance.now();
+    lastDraw = -Infinity;
   }
   function setHighSpeed(enabled) {
     if (!container || highSpeed === enabled) return;
     highSpeed = enabled;
     configure();
-    nextFrame = performance.now();
+    lastDraw = -Infinity;
   }
 
   function draw() {
-    const boosted = highSpeed || (color && !largeSquares);
+    // High speed draws brightness only: tinted layers lowered its contrast and
+    // did not survive real camera chroma processing at this density.
+    const boosted = color && !largeSquares && !highSpeed;
     const seq = highSpeed ? colorFlag + (highSequence++ & 0x1fffffff)
       : (sequence++ & 0x3fffffff) + (boosted ? colorFlag : 0);
     const frame = packFrame({ ...header, seq }, encoder.encode(seq));
@@ -107,15 +110,9 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     const pixels = new Uint8ClampedArray(raster.pixels.buffer);
     if (boosted) {
       const extraSeq = seq + 0x40000000;
-      const data = colorPacket(prefix, header, extraSeq, encoder.encode(extraSeq), highSpeed);
+      const data = colorPacket(prefix, header, extraSeq, encoder.encode(extraSeq));
       const extra = createQR([{data, mode:'byte'}], {errorCorrectionLevel:'L', maskPattern:4, version:qr.version});
-      let third;
-      if (highSpeed) {
-        const thirdSeq = extraSeq + 0x20000000;
-        const data = colorPacket(prefix, header, thirdSeq, encoder.encode(thirdSeq), true);
-        third = createQR([{data, mode:'byte'}], {errorCorrectionLevel:'L', maskPattern:4, version:qr.version});
-      }
-      paintColor(pixels, qr.modules, extra.modules, margin, third?.modules);
+      paintColor(pixels, qr.modules, extra.modules, margin);
     }
     source.putImageData(new ImageData(pixels, raster.size, raster.size), 0, 0);
     screen.drawImage(staging, 0, 0, canvas.width, canvas.height);
@@ -134,10 +131,29 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     }
   }
 
+  // Estimate the display's refresh period from the median rAF interval.
+  // Pauses are ignored. A throttled page can tick at only 20 Hz.
+  function trackRefresh(now) {
+    const interval = now - lastTick;
+    lastTick = now;
+    if (!(interval > 4 && interval < 100)) return;
+    deltas.push(interval);
+    if (deltas.length > 31) deltas.shift();
+    if (deltas.length >= 7) refresh = [...deltas].sort((a, b) => a - b)[deltas.length >> 1];
+  }
+
   function tick(now) {
     if (!encoder) return;
     try {
-      if (now >= nextFrame) {
+      trackRefresh(now);
+      // Show each symbol for a whole number of display refreshes so camera
+      // exposures can find a stable frame between two content changes.
+      // Twenty symbols/s at 60 Hz gives a 30 frames/s rolling-shutter camera at
+      // least one capture of almost every symbol without a content change.
+      const rate = largeSquares ? 12 : 20;
+      const hold = Math.max(1, Math.round(1000 / rate / refresh));
+      if (now - lastDraw >= (hold - 0.5) * refresh) {
+        lastDraw = now;
         if (offerCanvas && version && now >= nextOfferAt) {
           offerUntil = now + 180;
           nextOfferAt = now + 2300;
@@ -145,9 +161,6 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
         if (offerCanvas && now < offerUntil) {
           screen.drawImage(offerCanvas, 0, 0, canvas.width, canvas.height);
         } else draw();
-        // A late or resumed tab holds the current frame, never bursts missed ones.
-        const rate = highSpeed ? 30 : largeSquares ? 12 : 24;
-        nextFrame = Math.max(nextFrame + 1000 / rate, now + 750 / rate);
       }
       animation = requestAnimationFrame(tick);
     } catch (error) {
@@ -160,8 +173,8 @@ export async function prepareLightSender(file, canvas, { onError } = {}) {
     if (!encoder || animation !== undefined) return;
     if (active.get(canvas) !== stop) active.get(canvas)?.();
     active.set(canvas, stop);
-    nextFrame = performance.now();
-    tick(nextFrame);
+    lastDraw = -Infinity;
+    tick(performance.now());
   }
   function pause() {
     cancelAnimationFrame(animation);

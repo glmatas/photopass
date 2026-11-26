@@ -1,4 +1,4 @@
-import './reader-worker.js?v=8';
+import './reader-worker.js?v=9';
 import { sampleColor } from './sample-color.js';
 
 // The same ZXing worker can read the second QR after projecting warm and
