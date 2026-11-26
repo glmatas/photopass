@@ -7,7 +7,7 @@ export function pickupPacket(id, nonce) {
 }
 
 export async function readyTone(packet, signal, onReady, {
-  onMessage, cameraGroup, onListening, onUnavailable, outputContext, pairingChirp, onWaitingForTap, onPlayed,
+  onMessage, cameraGroup, onListening, onUnavailable, outputContext, pairingChirp, onWaitingForTap, onPlayed, gaps,
 } = {}) {
   if (signal.aborted) return;
   const Context = window.AudioContext || window.webkitAudioContext;
@@ -73,7 +73,7 @@ export async function readyTone(packet, signal, onReady, {
     // Replay after 1 s as before. The ready tone, which has no other trigger, plays 3 times in total
     // (the third 3 s later) so a missed first play never needs a tap. The answer plays twice.
     // Aborting the tone (the answer replaces the ready packet) cancels any pending replay.
-    const gaps = pairingChirp ? [1000, 3000] : [1000];
+    gaps ??= pairingChirp ? [1000, 3000] : [1000];
     let replays = 0;
     const replay = () => {
       retry = setTimeout(() => {
@@ -181,7 +181,7 @@ export function phonePairing(ready, signal, status, retry) {
   };
 }
 
-export function startPickupDisplay(transfer, packet, render, { file, cameraGroup, onPairStatus, micRetry }) {
+export function startPickupDisplay(transfer, packet, render, { file, cameraGroup, onPairStatus, micRetry, immediate, confirmed, onMessage }) {
   const life = new AbortController();
   let direct;
   function stream(confirmed) {
@@ -192,10 +192,11 @@ export function startPickupDisplay(transfer, packet, render, { file, cameraGroup
     render(true, confirmed);
   }
   render(false);
-  const timer = setTimeout(() => stream(false), 5000);
+  // A visitor who already tried QR pairing is waiting, so start at once.
+  const timer = setTimeout(() => stream(false), immediate ? 0 : 5000);
   function heard() {
     stream(true);
-    direct ??= import('./pickup-direct.js?v=14').then(({offerPickup}) =>
+    direct ??= import('./pickup-direct.js?v=15').then(({offerPickup}) =>
       life.signal.aborted ? undefined : offerPickup(file, packet, transfer, life.signal, onPairStatus)).catch(() => {
         if (!life.signal.aborted) onPairStatus('Phone tone received. Using screen transfer.');
       });
@@ -226,10 +227,62 @@ export function startPickupDisplay(transfer, packet, render, { file, cameraGroup
         onPairStatus(message);
         micRetry.hidden = false;
       },
-      onMessage: bytes => { void direct?.then(attempt => attempt?.answer(bytes)); },
+      onMessage: bytes => { onMessage?.(bytes); void direct?.then(attempt => attempt?.answer(bytes)); },
     });
   }
   micRetry.addEventListener('click', listen);
   listen();
+  if (confirmed) heard();
   return () => { life.abort(); clearTimeout(timer); micRetry.removeEventListener('click', listen); };
+}
+
+// The phone's reply in QR pairing: the same bytes as its reply QR, played
+// three times. Without a user gesture most phones block sound, so a tap on
+// the button (or anywhere on the page) starts it; the QR never waits for it.
+export function replyTone(bytes, signal, status, button) {
+  const Context = window.AudioContext || window.webkitAudioContext;
+  let speaker, tone, previousType;
+  function show(message, canRetry = false) {
+    status.textContent = message;
+    status.hidden = !message;
+    button.hidden = !canRetry;
+  }
+  function stop() {
+    tone?.abort();
+    tone = undefined;
+  }
+  function play() {
+    if (signal.aborted || !Context) return;
+    stop();
+    tone = new AbortController();
+    if (!speaker) {
+      try {
+        const session = navigator.audioSession;
+        if (session?.type && session.type !== 'playback') {
+          previousType = session.type;
+          session.type = 'playback';
+        }
+      } catch { /* Audio Session is optional. */ }
+      try { speaker = new Context(); } catch { show('This browser cannot play the pairing tone. Show the code instead.'); return; }
+    }
+    show('Playing the pairing tone…');
+    void readyTone(bytes, tone.signal, undefined, {
+      outputContext: speaker, gaps: [1000, 5000],
+      onWaitingForTap: () => show('Sound is off. Tap Play pairing tone, or just show the code.', true),
+      onPlayed: () => show('Pairing tone played. You can play it again.', true),
+      onUnavailable: () => show('The pairing tone could not play. Show the code instead.', true),
+    });
+  }
+  button.addEventListener('click', play);
+  signal.addEventListener('abort', () => {
+    stop();
+    button.removeEventListener('click', play);
+    if (speaker && speaker.state !== 'closed') speaker.close().catch(() => {});
+    try {
+      if (previousType && navigator.audioSession.type === 'playback') navigator.audioSession.type = previousType;
+    } catch { /* The browser may withdraw access to its audio session. */ }
+    show('');
+  }, { once: true });
+  if (Context) play();
+  else show('');
 }

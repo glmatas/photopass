@@ -1,4 +1,4 @@
-import { PhotoPeer } from './peer.js?v=12';
+import { PhotoPeer } from './peer.js?v=13';
 import { decodeCompact, encodeCompact } from './signal-codec.js';
 
 // The existing camera reads offers between photo frames. A phone's speaker
@@ -38,6 +38,7 @@ function matches(bytes, token, kind) {
 }
 
 const nonceOf = token => token.subarray(token.length - 6);
+const newRound = () => crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, '0');
 
 // Appended to a failure message so a field test names the stalled phase.
 function diagnosis(detail, since, label) {
@@ -58,8 +59,8 @@ export function trimAnswer(sdp) {
   return trimmed;
 }
 
-function answerMessage(token, description, round) {
-  const sdp = trimAnswer(description.sdp);
+export function answerMessage(token, description, round, trim = trimAnswer) {
+  const sdp = trim(description.sdp);
   const payload = encodeCompact({ type: 'answer', sdp }, round);
   const nonce = nonceOf(token);
   if (payload.length + nonce.length + 1 > limit) throw new Error('Pairing details exceed one packet.');
@@ -102,7 +103,7 @@ export function offerPickup(file, token, transfer, signal, onStatus) {
       },
     });
     peer = current;
-    round = crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, '0');
+    round = newRound();
     accepted = false;
     acceptedAt = undefined;
     try {
@@ -202,5 +203,97 @@ export function receivePickup(token, id, signal, sendAnswer, onPhoto, onProgress
       /* A later camera frame can still carry a valid offer. */
     }
     return true;
+  };
+}
+
+// Default kiosk pairing. The offer is a static QR that the phone opens from
+// its camera app. The phone's reply comes back as a QR to the kiosk camera or
+// as a tone to the kiosk microphone, both carrying the same bytes; the first
+// valid one wins and later copies are ignored. Budgets are in milliseconds.
+export const CODE_BUDGETS = {
+  reply: 25000,   // Kiosk: show the moving square if no reply arrives by then.
+  slow: 8000,     // Kiosk: show the moving square if a reply has not connected by then.
+  connect: 30000, // Kiosk: give up on a reply that has not connected by then.
+  phone: 40000,   // Phone: switch to its camera if the kiosk has not started checks by then.
+};
+export const budget = name => globalThis.photoPassBudgets?.[name] ?? CODE_BUDGETS[name];
+
+// The phone's reply in this flow carries mDNS or raw host candidates, so trim
+// raw IPv6 host and reflexive candidates when an IPv4 or mDNS one of the same
+// type remains. A shorter reply means a coarser QR and a shorter tone.
+export function trimReply(sdp) {
+  const trimmed = trimAnswer(sdp);
+  const lines = trimmed.split('\n');
+  const kind = line => {
+    const m = /^a=candidate:\S+ \d+ \S+ \d+ (\S+) \d+ typ (\w+)/.exec(line);
+    return m && { type: m[2], v6: m[1].includes(':') };
+  };
+  const hasV4 = type => lines.some(line => { const k = kind(line); return k && k.type === type && !k.v6; });
+  return lines.filter(line => { const k = kind(line); return !k || !k.v6 || !hasV4(k.type); }).join('\n');
+}
+
+export function codePairing(file, token, signal, { onStatus, onReplied, onProgress, onSent, onFailed }) {
+  let peer, round, accepted = false, acceptedAt, timer, sending = false;
+  function clear() {
+    clearTimeout(timer);
+    peer?.close();
+    peer = undefined;
+  }
+  signal.addEventListener('abort', clear, { once: true });
+  function failed(reason, detail = peer?.describe()) {
+    if (!peer) return;
+    const code = diagnosis(detail, acceptedAt, 'after reply');
+    clear();
+    onFailed(reason, code);
+  }
+  async function start() {
+    const current = new PhotoPeer({
+      onSent() { if (peer === current) { clear(); onSent(); } },
+      onFailure(_, phase, detail) {
+        if (peer === current) failed(phase === 'transfer' ? 'dropped' : accepted ? 'network' : 'expired', detail);
+      },
+      onProgress(fraction) {
+        if (peer !== current) return;
+        if (!sending) { sending = true; clearTimeout(timer); onStatus('Sending the photo directly.'); }
+        onProgress(fraction);
+      },
+    });
+    peer = current;
+    round = newRound();
+    const description = await current.offer(file, { quickGather: true });
+    if (peer !== current) throw new Error('Pairing canceled.');
+    return { description: { type: 'offer', sdp: trimReply(description.sdp) }, round };
+  }
+  async function accept(decoded, via) {
+    const current = peer;
+    if (!current || accepted || decoded?.session !== round || decoded.description?.type !== 'answer') return false;
+    accepted = true;
+    acceptedAt = performance.now();
+    onReplied(via);
+    onStatus('Phone reply received by ' + via + '. Connecting directly…');
+    timer = setTimeout(() => { if (peer === current) failed('network'); }, budget('connect'));
+    try {
+      await current.accept(decoded.description);
+    } catch {
+      if (peer === current) failed('network');
+    }
+    return true;
+  }
+  return {
+    start,
+    get accepted() { return accepted; },
+    get round() { return round; },
+    // A decoded reply QR: { session, description }.
+    code: decoded => accept(decoded, 'camera'),
+    // A packet from the kiosk microphone.
+    tone(bytes) {
+      const payload = !accepted && answerPayload(bytes, token);
+      if (!payload) return false;
+      let decoded;
+      try { decoded = decodeCompact(payload, 'answer'); } catch { return false; }
+      return accept(decoded, 'sound');
+    },
+    describe: () => peer?.describe() || '',
+    close: clear,
   };
 }

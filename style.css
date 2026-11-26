@@ -383,6 +383,13 @@ h1 em { color: var(--green); }
   background: var(--ink);
   border-radius: 5px;
 }
+/* A larger, mirrored view helps the visitor aim the phone; scanning reads raw frames. */
+#pairing-panel:not(.phone-reply) #scanner { width: clamp(120px, 15vw, 220px); transform: scaleX(-1); }
+.pair-actions > p { margin: 8px 0 0; }
+.pair-actions > p:empty { display: none; }
+.pair-actions > .button:not([hidden]), .pair-actions > .reset-button:not([hidden]) { margin-top: 10px; }
+/* The phone's reply is read by a webcam: black on white with a full quiet zone. */
+.phone-reply #pair-qr { background: #fff; }
 .manual-tools { grid-column: 1 / -1; border-top: 1px solid var(--rule); padding: 16px 0 0; }
 .manual-tools summary { width: fit-content; cursor: pointer; line-height: 1.5; color: var(--green); }
 .manual-fields { max-width: 600px; display: grid; gap: 9px; margin: 18px 0 0; }

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=12">
-  <script type="module" src="./app.js?v=17"></script>
+  <link rel="stylesheet" href="./style.css?v=13">
+  <script type="module" src="./app.js?v=18"></script>
 </head>
 <body>
   <header class="masthead">
@@ -74,7 +74,8 @@
       <div class="light-layout">
         <div class="pickup-copy">
           <h1 id="light-send-title">Get your photo</h1>
-          <p class="intro">Scan the pickup code, open the link, and allow camera access. Keep the moving square in view until your photo appears.</p>
+          <p id="light-send-intro" class="intro">Scan the pickup code, open the link, and allow camera access. Keep the moving square in view until your photo appears.</p>
+          <p id="pickup-note" class="support-text" role="status"></p>
           <figure id="late-join" hidden>
             <figcaption>Scan to open the pickup link</figcaption>
           </figure>
@@ -172,11 +173,16 @@
           </div>
         </div>
         <div class="pair-actions">
-          <button type="button" id="scan-button" class="button primary">Scan phone’s reply</button>
           <div class="scan-preview">
             <video id="scanner" aria-label="Live kiosk camera view of the phone’s reply code" playsinline muted hidden></video>
             <p id="scan-status" class="support-text" role="status"></p>
           </div>
+          <p id="pair-listen" class="support-text" role="status"></p>
+          <p id="pair-status" class="support-text" role="status"></p>
+          <p id="pair-tone-status" class="support-text" role="status" hidden></p>
+          <button type="button" id="pair-tone" class="button secondary" hidden>Play pairing tone</button>
+          <button type="button" id="pair-camera" class="reset-button" hidden>Use camera instead</button>
+          <button type="button" id="pair-square" class="reset-button" hidden>Show moving square</button>
         </div>
       </div>
       <div class="code-area">

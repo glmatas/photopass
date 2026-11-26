@@ -1,11 +1,14 @@
 # PhotoPass
 
-PhotoPass delivers the original kiosk photo to a phone. By default, the visitor opens a short pickup link and keeps the phone camera pointed at a moving square while the file arrives. Both devices can load the interface from the same static GitHub Pages site. A camera-free pickup uses the kiosk speaker and the phone microphone.
+PhotoPass delivers the original kiosk photo to a phone. By default, the visitor scans one QR code and the photo travels over a direct connection; if the devices can't pair, the kiosk adds a moving square that the phone's camera reads instead. Both devices can load the interface from the same static GitHub Pages site. A camera-free pickup uses the kiosk speaker and the phone microphone.
 
 ## Pick up a photo
 
-1. On the kiosk, select **Take photo**. The pickup QR appears automatically. For an existing JPEG, PNG or WebP up to 32 MiB, choose the file and select **Show pickup code**.
-2. On the phone, scan the QR, open the link and allow camera access. Keep the phone pointed at that same square. The photo appears automatically once the original file is verified.
+1. On the kiosk, select **Take photo**. The pairing QR appears automatically. For an existing JPEG, PNG or WebP up to 32 MiB, choose the file and select **Show pickup code**.
+2. On the phone, scan the QR with the camera app and open the link. The phone shows a reply code and plays it as a short tone. Hold the phone screen up to the kiosk camera, about a hand's length away. The kiosk reads whichever arrives first, connects directly, and the photo appears on the phone once the original file is verified.
+   - If sound is blocked, the phone shows **Play pairing tone**; the reply code works without it.
+   - If the kiosk gets no reply within 25 s, or a reply that has not connected within 8 s, it adds the moving square beside a smaller copy of the same QR and keeps listening for the reply. The phone switches to its camera by itself after 40 s without the kiosk's connection checks, or at once when the connection fails; **Use camera instead** does this immediately. Allow camera access and keep the moving square in view. The kiosk's **Show moving square** adds the square at once.
+   - Add `?square` to the kiosk address to start with the moving square, as in earlier versions.
 3. To keep a copy, select **Save photo** or use the share sheet. The kiosk operator can select **Next visitor** when pickup is finished.
 
 Allow the kiosk microphone during setup for the quickest start. PhotoPass prefers a microphone in the selected camera's device group. If the browser provides no group, it can pick a uniquely labelled Brio microphone or use the system input. Logitech lists two built-in microphones for the Brio 4K. [Brio 4K specifications](https://secure.logitech.com/content/dam/logitech/en/video-collaboration/pdf/brio-datasheet.pdf) · [Media Capture device groups](https://www.w3.org/TR/mediacapture-streams/)
@@ -51,7 +54,11 @@ To measure a physical camera, point a webcam at a monitor and run `node tests/re
 
 The following tests run the full pickup using digital speaker-to-microphone audio and camera pixels. They hold camera permission, send a wrong-session tone, grant permission, and verify the original bytes and released devices. The second command rejects the network handshake. The third closes an active direct channel after 160 KiB. The optical benchmark above runs with audio unavailable.
 
+The QR pairing route has its own silent suite. Each mode simulates the kiosk webcam reading the phone's reply code from a canvas feed, and carries the tone as PCM on the test bus. `--qr` mutes the tone, `--tone` hides the phone from the camera, `--both` lets both race, `--tap` blocks sound until **Play pairing tone**, `--neither` delivers no reply so both devices fall back to the moving square, and `--break-rtc` rejects the connection after a reply. The moving-square suite below starts its kiosk with `?square`.
+
 ```sh
+node tests/pair-routes.mjs --both
+node tests/pair-routes.mjs --neither
 node tests/pickup-routes.mjs --brio
 node tests/pickup-routes.mjs --break-rtc
 node tests/pickup-routes.mjs --drop-rtc
@@ -87,7 +94,7 @@ The capture handler runs in a page with the PhotoPass interface. Omit the option
 
 ## Optional direct transfer
 
-For faster delivery on networks that permit a direct WebRTC connection, open **Kiosk options** and select **Pair for direct transfer**, or open the kiosk page with `?direct`. In this mode, scan the kiosk QR and turn the phone’s reply code toward the kiosk camera. The kiosk scans the reply automatically after a camera capture. The browsers use public STUN to discover network addresses and transfer the file over an encrypted data channel. A restrictive venue or carrier network can still prevent this connection. Screen transfer works independently of STUN and TURN. [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections)
+QR pairing is the default. In `?square` mode, **Kiosk options → Pair for direct transfer** switches to it. The kiosk scans the phone's reply with its camera and listens for the reply tone at the same time; the reply code uses low error correction for the coarsest grid, and omits TCP and redundant IPv6 candidates, so it fits a version 7 QR. The phone holds the kiosk's network candidates until the kiosk's own connection checks arrive, so a kiosk firewall that drops unsolicited packets does not block it. The browsers use public STUN to discover network addresses and transfer the file over an encrypted data channel. A restrictive venue or carrier network can still prevent this connection. Screen transfer works independently of STUN and TURN. [WebRTC peer connections](https://webrtc.org/getting-started/peer-connections)
 
 ## Camera-free pickup by sound
 

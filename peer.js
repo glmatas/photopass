@@ -271,6 +271,7 @@ export class PhotoPeer {
   // sends no connectivity checks until releaseCandidates(). The offerer's own
   // checks still connect at once when it applies the answer. A delayed answer
   // then cannot time out against a firewall that drops unsolicited packets.
+  // holdCandidates "checking" releases them when the offerer's checks arrive.
   async answer(offer, { quickGather = false, holdCandidates = false } = {}) {
     let remote = checkDescription(offer, "offer");
     const s = this._start("receiver");
@@ -291,6 +292,16 @@ export class PhotoPeer {
         });
         s.heldCandidates = held;
         remote = { type: "offer", sdp: lines.join("\n") };
+        // "checking": release once the offerer's own checks arrive, which
+        // means it has applied the answer and opened its firewall to us.
+        if (holdCandidates === "checking") {
+          const release = () => {
+            if (s.pc.iceConnectionState === "new") return;
+            s.pc.removeEventListener("iceconnectionstatechange", release);
+            void this.releaseCandidates();
+          };
+          s.pc.addEventListener("iceconnectionstatechange", release);
+        }
       }
       await s.pc.setRemoteDescription(remote);
       await s.pc.setLocalDescription(await s.pc.createAnswer());

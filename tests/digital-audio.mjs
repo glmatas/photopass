@@ -22,7 +22,7 @@ export function installDigitalAudio({ direct, noKioskMic = false }) {
   });
   const role = () => {
     const query = new URLSearchParams(location.search);
-    return location.hash.startsWith('#L') ||
+    return location.hash.startsWith('#L') || location.hash.startsWith('#2') ||
       query.has('listen') ||
       query.has('s') ||
       location.hash === '#listen'

@@ -1,8 +1,8 @@
-import { PhotoPeer } from './peer.js?v=12';
-import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
+import { PhotoPeer } from './peer.js?v=13';
+import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=4';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=17';
-import {receivePickup} from './pickup-direct.js?v=14';
+import {pickupPacket, phonePairing, readyTone, replyTone, startPickupDisplay} from './pickup.js?v=18';
+import {answerMessage, budget, codePairing, receivePickup, trimReply} from './pickup-direct.js?v=15';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
@@ -14,7 +14,6 @@ let generation = 0;
 let peer;
 let camera;
 let cameraPending = false;
-let accepting = false;
 let picked;
 let previousPreview;
 let receivedURL;
@@ -36,10 +35,14 @@ let sound;
 let retryMode;
 let wakeLock;
 let wakePending = false;
-const preferDirect = new URLSearchParams(location.search).has('direct');
+let pairing;
+let phoneReply;
+let phoneTimer;
+// QR pairing is the default; ?square starts with the moving square instead.
+const preferSquare = new URLSearchParams(location.search).has('square');
 
 async function updateScreenLock() {
-  const needsScreen = () => (page.startsWith('light-') || (sound && page.startsWith('sound-'))) && document.visibilityState === 'visible';
+  const needsScreen = () => (page.startsWith('light-') || page === 'pairing' || (sound && page.startsWith('sound-'))) && document.visibilityState === 'visible';
   if (!needsScreen()) {
     const previous = wakeLock;
     wakeLock = undefined;
@@ -172,6 +175,8 @@ async function startCapture() {
 
 function cleanUp() {
   generation++;
+  stopPairing();
+  stopPhoneReply();
   stopSound();
   stopLight();
   stopCapture();
@@ -179,7 +184,6 @@ function cleanUp() {
   peer?.close();
   peer = undefined;
   cameraPending = false;
-  accepting = false;
   if (receivedURL) URL.revokeObjectURL(receivedURL);
   if (previousPreview) URL.revokeObjectURL(previousPreview);
   receivedURL = previousPreview = receivedFile = picked = undefined;
@@ -217,6 +221,8 @@ function reset(clearLocation = true) {
 }
 
 function fail(message, title = 'Transfer interrupted') {
+  stopPairing();
+  stopPhoneReply();
   stopScan();
   stopLight();
   stopSound();
@@ -269,6 +275,7 @@ function createPeer() {
     onProgress(fraction) {
       if (current !== generation) return;
       stopScan();
+      stopPhoneReply();
       show('transfer');
       el('transfer-title').textContent = role === 'phone' ? 'Receiving your photo' : 'Sending the original';
       const percent = Math.floor(fraction * 100);
@@ -279,6 +286,10 @@ function createPeer() {
     onSent() { if (current === generation) done(); },
     onFailure(message, stage) {
       if (current !== generation || page === 'done') return;
+      if (role === 'phone' && lightId) {
+        useCamera(stage === 'pairing' ? 'The direct connection failed. Using the camera instead.' : 'The direct connection dropped. Using the camera instead.');
+        return;
+      }
       const title = stage === 'pairing' ? 'The devices couldn’t connect' : 'Transfer interrupted';
       if (role === 'kiosk') retryMode = 'light';
       if (stage === 'pairing' && role === 'phone') message += ' Scan the screen-transfer pickup code on the kiosk to receive it by camera.';
@@ -291,7 +302,8 @@ async function pair(text, receiver, current) {
   const qr = el('pair-qr');
   let qrAvailable = true;
   try {
-    await drawCode(qr, text);
+    // The phone's reply uses the coarsest grid so a kiosk webcam reads it.
+    await drawCode(qr, text, { level: receiver ? 'L' : 'M' });
   } catch {
     qrAvailable = false;
   }
@@ -301,15 +313,18 @@ async function pair(text, receiver, current) {
   el('pair-text').value = text;
   el('manual-input').hidden = el('manual-apply').hidden = receiver;
   el('manual-input').labels?.forEach(label => { label.hidden = receiver; });
-  el('scan-button').hidden = receiver;
-  el('scan-button').disabled = false;
-  el('scan-status').textContent = '';
+  el('scan-status').textContent = el('pair-status').textContent = el('pair-listen').textContent = '';
+  el('scanner').hidden = true;
+  el('pair-square').hidden = receiver;
+  el('pair-camera').hidden = !receiver || !lightId;
+  el('pair-tone').hidden = el('pair-tone-status').hidden = true;
+  el('pairing-panel').classList.toggle('phone-reply', receiver);
   el('pair-photo').hidden = receiver || !previousPreview;
   if (!el('pair-photo').hidden) el('pair-photo').src = previousPreview;
   el('pair-title').textContent = receiver ? 'Show this code to the kiosk' : 'Scan with your phone';
   el('pair-instructions').textContent = receiver
-    ? 'Face your screen toward the kiosk camera. Keep this page open.'
-    : 'Open your camera and scan this code. Then show the reply to the kiosk.';
+    ? 'Hold your screen up to the kiosk camera, about a hand’s length away, with the brightness up. Keep this page open.'
+    : 'Open your phone’s camera and scan this code. Then hold your phone up to the kiosk camera.';
   if (!qrAvailable) {
     el('pair-title').textContent = 'Pair using text';
     el('pair-instructions').textContent = receiver
@@ -318,7 +333,7 @@ async function pair(text, receiver, current) {
   }
   el('status').textContent = '';
   show('pairing');
-  if (!receiver && capturedHere && qrAvailable) scanReply();
+  return qrAvailable;
 }
 
 function clearPicked() {
@@ -353,23 +368,204 @@ function selectFile(file, fromCamera = false) {
   el('start-button').hidden = el('start-button').disabled = false;
 }
 
-async function beginDirect() {
+function stopPairing() {
+  const active = pairing;
+  if (!active) return;
+  pairing = undefined;
+  clearTimeout(active.timer);
+  active.life.abort();
+  stopScan();
+}
+
+function stopPhoneReply() {
+  clearTimeout(phoneTimer);
+  phoneTimer = undefined;
+  phoneReply?.abort();
+  phoneReply = undefined;
+}
+
+const newNonce = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+', '-').replaceAll('/', '_');
+const nonceBytes = nonce => Uint8Array.from(atob(nonce.replaceAll('-', '+').replaceAll('_', '/')), c => c.charCodeAt(0));
+const idBytes = id => Uint8Array.from(id.match(/../g), hex => parseInt(hex, 16));
+const toHex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+const toNonce = bytes => btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_');
+
+const PAIR_FAILED = {
+  reply: 'No reply from a phone yet. The moving square is running too, and the code still works.',
+  slow: 'The phone’s reply has not connected yet. The moving square is running too.',
+  network: 'Phone reply received, but the direct network connection failed. The moving square is running.',
+  dropped: 'The direct connection dropped. The moving square is running.',
+  start: 'Direct pairing could not start. The moving square is running.',
+  expired: 'The pairing code expired. The moving square is running.',
+  devices: 'The kiosk camera and microphone are unavailable. The moving square is running.',
+  ready: 'The phone is using its camera. The moving square is running.',
+  manual: '',
+};
+
+// Default kiosk pickup. A static QR carries the direct-connection offer and
+// the screen-transfer id. The phone's reply returns as a QR to the kiosk
+// camera or as a tone to its microphone, whichever comes first. Without a
+// reply in time, the moving square joins the code, so pickup never depends on
+// direct pairing.
+async function beginPair() {
   if (!picked || role !== 'kiosk') return;
   stopLight();
-  retryMode = 'direct';
+  stopPairing();
+  retryMode = 'light';
   const current = generation;
-  working('Preparing the QR code', 'Finding a direct connection…');
+  working('Preparing the pickup code', 'Finding a direct connection…');
+  let transfer;
   try {
-    requireBrowser();
-    session = crypto.randomUUID();
-    peer = createPeer();
-    const offer = await peer.offer(picked);
+    const { prepareLightSender } = await import('./light-sender.js?v=11');
     if (current !== generation) return;
-    const offerLink = await makeSignalURL(offer, session, receiverPage);
-    if (current === generation) await pair(offerLink, false, current);
+    transfer = await prepareLightSender(picked, el('light-stream'), {
+      onError(message) { if (current === generation && page === 'light-send') fail(String(message), 'Screen transfer stopped'); }
+    });
   } catch (error) {
-    if (current === generation) fail(error.message, 'Couldn’t prepare the pairing code');
+    if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
+    return;
   }
+  if (current !== generation) { transfer.stop(); return; }
+  lightSender = transfer;
+  const nonce = newNonce();
+  if (!window.isSecureContext || !window.RTCPeerConnection) { showSquare(transfer, nonce); return; }
+  const token = pickupPacket(transfer.id, nonce);
+  const active = { life: new AbortController(), transfer, nonce, token, phase: 1 };
+  pairing = active;
+  const note = message => {
+    if (pairing !== active || !message) return;
+    el(active.phase === 1 ? 'pair-status' : 'pickup-note').textContent = message;
+  };
+  active.attempt = codePairing(picked, token, active.life.signal, {
+    onStatus: note,
+    onReplied() {
+      if (pairing !== active) return;
+      stopScan();
+      active.mic?.abort();
+      el('scan-status').textContent = el('pair-listen').textContent = '';
+      clearTimeout(active.timer);
+      if (active.phase === 1) active.timer = setTimeout(() => squareFor(active, 'slow'), budget('slow'));
+    },
+    onProgress(fraction) {
+      if (pairing !== active) return;
+      clearTimeout(active.timer);
+      if (active.phase !== 1) return;
+      show('transfer');
+      el('transfer-title').textContent = 'Sending the original';
+      const percent = Math.floor(fraction * 100);
+      el('progress').value = percent;
+      el('progress-label').textContent = percent === 100 ? 'Verifying the file…' : percent + '% transferred';
+    },
+    onSent() {
+      if (pairing !== active) return;
+      stopPairing();
+      stopLight();
+      done();
+    },
+    onFailed(reason, code) {
+      if (pairing !== active) return;
+      const message = PAIR_FAILED[reason] + code;
+      if (active.phase === 1) { squareFor(active, reason, message); return; }
+      // The offer is spent: a late phone should open the plain pickup link.
+      note(message);
+      stopScan();
+      active.retired = true;
+      drawCode(el('light-join'), squareLink(transfer, nonce));
+    },
+  });
+  try {
+    const { description, round } = await active.attempt.start();
+    if (pairing !== active) return;
+    session = round;
+    const pickup = Uint8Array.of(...idBytes(transfer.id), ...nonceBytes(nonce));
+    active.link = await makeSignalURL(description, round, receiverPage, pickup);
+    if (pairing !== active) return;
+    if (!(await pair(active.link, false, current)) || pairing !== active) { squareFor(active, 'start'); return; }
+  } catch {
+    if (pairing === active) squareFor(active, 'start');
+    return;
+  }
+  active.timer = setTimeout(() => squareFor(active, 'reply'), budget('reply'));
+  listenForReply(active);
+  scanCode(active);
+}
+
+function deviceDown(active, kind) {
+  active[kind] = true;
+  if (active.micDown && active.cameraDown && !active.attempt.accepted) squareFor(active, 'devices');
+}
+
+function listenForReply(active) {
+  active.mic = new AbortController();
+  const stop = () => active.mic.abort();
+  active.life.signal.addEventListener('abort', stop, { once: true });
+  el('pair-listen').textContent = 'Opening the kiosk microphone…';
+  void readyTone(active.token, active.mic.signal, () => squareFor(active, 'ready'), {
+    cameraGroup: selectedCameraGroup,
+    onListening(label) {
+      if (pairing === active && active.phase === 1) el('pair-listen').textContent = 'Listening for the phone’s tone' + (label ? ' on ' + label : '') + '.';
+    },
+    onUnavailable() {
+      if (pairing !== active || active.phase !== 1) return;
+      el('pair-listen').textContent = 'The kiosk microphone is unavailable. Show the phone’s code to the camera.';
+      deviceDown(active, 'micDown');
+    },
+    onMessage: bytes => { void active.attempt.tone(bytes); },
+  });
+}
+
+async function codeText(active, text) {
+  if (!active || pairing !== active || active.attempt.accepted) return;
+  let decoded;
+  try {
+    decoded = await readSignal(String(text).trim());
+  } catch {
+    if (pairing === active) el('scan-status').textContent = 'That is not a PhotoPass reply. Show the code from the phone that scanned this kiosk.';
+    return;
+  }
+  if (pairing !== active) return;
+  if (decoded.description.type !== 'answer' || decoded.session !== active.attempt.round) {
+    el('scan-status').textContent = 'That reply belongs to an earlier code. Scan this kiosk’s code again with the phone.';
+    return;
+  }
+  await active.attempt.code(decoded);
+}
+
+async function scanCode(active) {
+  if (camera || cameraPending) return;
+  cameraPending = true;
+  el('scanner').hidden = false;
+  el('scan-status').textContent = 'Opening the kiosk camera…';
+  try {
+    const release = await startCamera(el('scanner'), text => codeText(active, text), selectedCameraId);
+    if (pairing !== active || active.attempt.accepted) release();
+    else {
+      camera = release;
+      el('pairing-panel').classList.add('scanning');
+      if (active.phase === 1) el('scan-status').textContent = 'Hold the phone’s code up to this camera.';
+    }
+  } catch {
+    if (pairing === active) {
+      el('scanner').hidden = true;
+      el('scan-status').textContent = 'The kiosk camera is unavailable. The phone can still pair by its tone.';
+      deviceDown(active, 'cameraDown');
+    }
+  } finally {
+    cameraPending = false;
+  }
+}
+
+// Add the moving square. The QR code stays on screen, and the kiosk keeps
+// accepting the phone's reply by camera and microphone.
+function squareFor(active, reason, message = PAIR_FAILED[reason]) {
+  if (pairing !== active || active.phase !== 1) return;
+  active.phase = 2;
+  clearTimeout(active.timer);
+  active.mic?.abort();
+  showSquare(active.transfer, active.nonce, {
+    link: active.retired ? undefined : active.link, confirmed: reason === 'ready', note: message,
+    onMessage: bytes => { void active.attempt.tone(bytes); },
+  });
 }
 
 function lightHash(id) {
@@ -399,40 +595,56 @@ async function beginLight() {
     });
     if (current !== generation) { transfer.stop(); return; }
     lightSender = transfer;
-    const url = new URL(receiverPage || location.href);
-    const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
-    url.search = '?14';
-    url.hash = lightHash(transfer.id) + '.' + nonce;
-    drawCode(el('light-join'), url.href);
-    const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
-      : (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
-    el('light-size').textContent = capturedHere ? size : picked.name + ' · ' + size;
-    el('light-options').open = false;
-    el('light-mode').value = 'fast';
-    transfer.setHighSpeed(true);
-    el('light-mode-note').textContent = '';
-    el('status').textContent = '';
-    show('light-send');
-    stopPickupDisplay = startPickupDisplay(transfer, pickupPacket(transfer.id, nonce), (streaming, confirmed) => {
-      el('light-send-panel').dataset.pickupState = streaming ? (confirmed ? 'ready' : 'broadcast') : 'join';
-      const join = el('light-join');
-      const slot = streaming ? el('late-join') : el('light-stream').parentElement;
-      if (join.parentElement !== slot) slot.prepend(join);
-      el('late-join').hidden = !streaming;
-      el('light-stream').hidden = !streaming;
-      el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
-    }, {
-      file:picked, cameraGroup:selectedCameraGroup, micRetry:el('pickup-mic-retry'),
-      onPairStatus(message) { el('pickup-pair-status').textContent = message; },
-    });
+    showSquare(transfer, newNonce());
   } catch (error) {
     if (current === generation) fail(error.message, 'Couldn’t prepare screen transfer');
   }
 }
 
+// Show the moving square. link: the QR pairing code to keep showing for a
+// late phone (it also carries this pickup); otherwise the plain pickup link.
+function squareLink(transfer, nonce) {
+  const url = new URL(receiverPage || location.href);
+  url.search = '?14';
+  url.hash = lightHash(transfer.id) + '.' + nonce;
+  return url.href;
+}
+
+function showSquare(transfer, nonce, { link, confirmed = false, note = '', onMessage } = {}) {
+  retryMode = 'light';
+  drawCode(el('light-join'), link || squareLink(transfer, nonce));
+  const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
+    : (picked.size / 1000000).toLocaleString(undefined, {maximumFractionDigits: 2}) + ' MB';
+  el('light-size').textContent = capturedHere ? size : picked.name + ' · ' + size;
+  el('light-options').open = false;
+  el('light-direct').hidden = Boolean(link);
+  el('light-mode').value = 'fast';
+  transfer.setHighSpeed(true);
+  el('light-mode-note').textContent = '';
+  el('pickup-note').textContent = note;
+  el('light-send-intro').textContent = link
+    ? 'Scan the code with your phone. If it can’t pair directly, it uses its camera: keep the moving square in view until your photo appears.'
+    : 'Scan the pickup code, open the link, and allow camera access. Keep the moving square in view until your photo appears.';
+  el('status').textContent = '';
+  show('light-send');
+  stopPickupDisplay = startPickupDisplay(transfer, pickupPacket(transfer.id, nonce), (streaming, confirmed) => {
+    el('light-send-panel').dataset.pickupState = streaming ? (confirmed ? 'ready' : 'broadcast') : 'join';
+    const join = el('light-join');
+    const slot = streaming ? el('late-join') : el('light-stream').parentElement;
+    if (join.parentElement !== slot) slot.prepend(join);
+    el('late-join').hidden = !streaming;
+    el('light-stream').hidden = !streaming;
+    el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
+  }, {
+    file:picked, cameraGroup:selectedCameraGroup, micRetry:el('pickup-mic-retry'),
+    onPairStatus(message) { el('pickup-pair-status').textContent = message; },
+    immediate: Boolean(link), confirmed, onMessage,
+  });
+}
+
 function begin() {
   if (page !== 'start') return;
-  return preferDirect ? beginDirect() : beginLight();
+  return preferSquare ? beginLight() : beginPair();
 }
 
 async function readLight() {
@@ -662,49 +874,79 @@ export async function startPhotoSession(file, { receiverURL } = {}) {
   await begin();
 }
 
+// A reload cannot reuse the reply the kiosk may already hold.
+function firstVisit(key) {
+  try {
+    const name = 'photopass-offer-' + key;
+    if (sessionStorage.getItem(name)) return false;
+    sessionStorage.setItem(name, '1');
+  } catch { /* Storage can be unavailable in private modes. */ }
+  return true;
+}
+
+// Switch this phone to the moving square: the QR code it opened carries the
+// screen-transfer id, so no second scan is needed.
+function useCamera(note = '') {
+  if (role !== 'phone' || !lightId || !pickupNonce) return;
+  const id = lightId, nonce = pickupNonce;
+  cleanUp();
+  history.replaceState(null, '', location.pathname + '?14' + lightHash(id) + '.' + nonce);
+  openLight();
+  el('status').textContent = note;
+}
+
+function waitForKiosk() {
+  phoneTimer = undefined;
+  if (role !== 'phone' || page !== 'pairing' || !lightId) return;
+  // Once the kiosk's own checks arrive, the connection settles by itself.
+  const state = peer?.session?.pc?.iceConnectionState;
+  if (state && state !== 'new') { phoneTimer = setTimeout(waitForKiosk, 5000); return; }
+  useCamera('The kiosk did not connect. Using the camera instead.');
+}
+
+// The phone opened the kiosk's QR code. It shows its reply as a QR for the
+// kiosk camera and plays the same reply as a tone for the kiosk microphone.
+// If the kiosk does not connect, it switches to its camera and the moving square.
 async function openOffer(text) {
   role = 'phone';
   const current = generation;
   working('Preparing your reply code', 'Finding a direct connection…');
   let errorTitle = 'Couldn’t read the kiosk code';
+  let signal;
+  try {
+    signal = await readSignal(text);
+    if (signal.description.type !== 'offer') throw new Error('Scan the code on the kiosk to start a transfer.');
+  } catch (error) {
+    if (current === generation) fail(error.message, errorTitle);
+    return;
+  }
+  if (current !== generation) return;
+  lightId = signal.pickup && toHex(signal.pickup.subarray(0, 12));
+  pickupNonce = signal.pickup && toNonce(signal.pickup.subarray(12));
+  if (lightId && (!firstVisit(signal.session) || !window.isSecureContext || !window.RTCPeerConnection || !crypto.subtle)) {
+    useCamera('Point the camera at the moving square on the kiosk.');
+    return;
+  }
+  if (lightId) phoneTimer = setTimeout(waitForKiosk, budget('phone'));
   try {
     requireBrowser();
-    const signal = await readSignal(text);
-    if (signal.description.type !== 'offer') throw new Error('Scan the code on the kiosk to start a transfer.');
-    if (current !== generation) return;
     errorTitle = 'Couldn’t prepare the phone’s reply';
     session = signal.session;
     peer = createPeer();
-    const answer = await peer.answer(signal.description);
+    // Hold the kiosk's candidates until its checks arrive: its firewall may
+    // drop ours, and the reply can take a visitor many seconds to deliver.
+    const answer = await peer.answer(signal.description, { quickGather: true, holdCandidates: 'checking' });
     if (current !== generation) return;
-    const reply = await makeAnswerText(answer, session, signal.protocol);
-    if (current === generation) await pair(reply, true, current);
+    const reply = { type: 'answer', sdp: trimReply(answer.sdp) };
+    await pair(await makeAnswerText(reply, session, signal.protocol), true, current);
+    if (current !== generation || page !== 'pairing' || !lightId) return;
+    phoneReply = new AbortController();
+    replyTone(answerMessage(pickupPacket(lightId, pickupNonce), answer, session, trimReply),
+      phoneReply.signal, el('pair-tone-status'), el('pair-tone'));
   } catch (error) {
-    if (current === generation) fail(error.message, errorTitle);
-  }
-}
-
-async function acceptReply(text) {
-  if (accepting || page !== 'pairing' || role !== 'kiosk') return;
-  const current = generation;
-  accepting = true;
-  try {
-    let signal;
-    try {
-      signal = await readSignal(text.trim());
-      if (signal.description.type !== 'answer' || signal.session !== session) throw new Error();
-    } catch {
-      if (current === generation) el('scan-status').textContent = 'Use the reply code from the phone that scanned this kiosk code.';
-      return;
-    }
     if (current !== generation) return;
-    stopScan();
-    working('Connecting to the phone', 'Keep both screens open.');
-    await peer.accept(signal.description);
-  } catch (error) {
-    if (current === generation) fail(error.message, 'Couldn’t use the phone’s reply');
-  } finally {
-    if (current === generation) accepting = false;
+    if (lightId) useCamera('Direct pairing could not start. Using the camera instead.');
+    else fail(error.message, errorTitle);
   }
 }
 
@@ -744,7 +986,9 @@ el('retake-button').addEventListener('click', () => {
 });
 el('start-button').addEventListener('click', begin);
 el('light-start').addEventListener('click', readLight);
-el('light-direct').addEventListener('click', beginDirect);
+el('light-direct').addEventListener('click', () => { if (page === 'light-send') { stopLight(); beginPair(); } });
+el('pair-square').addEventListener('click', () => { if (pairing) squareFor(pairing, 'manual'); });
+el('pair-camera').addEventListener('click', () => useCamera('Point the camera at the moving square on the kiosk.'));
 el('light-sound').addEventListener('click', () => runSound(true));
 el('sound-back').addEventListener('click', () => { stopSound(); beginLight(); });
 el('error-sound').addEventListener('click', () => {
@@ -765,47 +1009,18 @@ el('light-expand').addEventListener('click', () => expandLight(true));
 el('light-zoom').addEventListener('click', () => expandLight(!document.documentElement.classList.contains('light-expanded')));
 el('error-retry').addEventListener('click', () => {
   if (retryMode === 'sound') return runSound(true);
-  if (retryMode === 'direct') return beginDirect();
   return beginLight();
 });
 el('reset-button').addEventListener('click', () => {
   reset();
   if (role === 'kiosk') startCapture();
 });
-async function scanReply() {
-  if (cameraPending || camera) return;
-  const current = generation;
-  cameraPending = true;
-  el('scan-button').disabled = true;
-  el('scanner').hidden = false;
-  el('scan-status').textContent = 'Allow camera access, then hold the phone’s reply code in view.';
-  try {
-    const release = await startCamera(el('scanner'), acceptReply, selectedCameraId);
-    if (current !== generation || page !== 'pairing') release();
-    else {
-      camera = release;
-      el('pairing-panel').classList.add('scanning');
-      el('scan-button').hidden = true;
-      el('scan-status').textContent = 'Hold the phone’s reply code in front of this camera.';
-    }
-  } catch {
-    if (current === generation) {
-      el('scanner').hidden = true;
-      el('manual-tools').open = true;
-      el('scan-status').textContent = 'Camera unavailable. Allow camera access and try again, or paste the reply using the pairing details below.';
-      el('scan-button').disabled = false;
-    }
-  } finally {
-    if (current === generation) cameraPending = false;
-  }
-}
-el('scan-button').addEventListener('click', scanReply);
 el('expand-qr').addEventListener('click', () => setExpanded(!document.documentElement.classList.contains('qr-expanded')));
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && document.documentElement.classList.contains('qr-expanded')) setExpanded(false);
   if (event.key === 'Escape' && document.documentElement.classList.contains('light-expanded')) expandLight(false);
 });
-el('manual-apply').addEventListener('click', () => acceptReply(el('manual-input').value));
+el('manual-apply').addEventListener('click', () => codeText(pairing, el('manual-input').value));
 el('copy-button').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(el('pair-text').value);

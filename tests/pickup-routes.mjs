@@ -218,7 +218,8 @@ try {
       .join('\n'),
   });
   const kiosk = await ctx.newPage();
-  await kiosk.goto(url + '?pickup-test=10');
+  // ?square: start with the moving square, the flow this suite covers.
+  await kiosk.goto(url + '?pickup-test=10&square');
   await kiosk.waitForFunction(() => window.qaAudio?.camera > 0);
   const original = await kiosk.evaluate(choosePhoto, {
     size: process.argv.includes('--10mb') ? 10000000 : 2300000,

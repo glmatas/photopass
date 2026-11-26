@@ -80,10 +80,12 @@ function encodeSignal(description, session, type) {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-export async function makeSignalURL(description, session, receiverURL = location.href) {
+// pickup: optional bytes (the 12-byte screen-transfer id and 6-byte nonce) so
+// the phone can fall back to the moving square without another scan.
+export async function makeSignalURL(description, session, receiverURL = location.href, pickup) {
   const url = new URL(receiverURL);
   url.search = '?2';
-  url.hash = '#2' + packText(encodeCompact(description, session));
+  url.hash = '#2' + packText(encodeCompact(description, session)) + (pickup ? '/' + packText(pickup) : '');
   return url.href;
 }
 
@@ -103,7 +105,12 @@ export async function readSignal(text) {
       token = value.slice(answerPrefix.length);
     } else {
       const hash = decodeURIComponent(value.startsWith('#') ? value : new URL(value).hash);
-      if (hash.startsWith('#2')) return { ...decodeCompact(unpackText(hash.slice(2)), 'offer'), protocol: 2 };
+      if (hash.startsWith('#2')) {
+        const [offer, pickup, ...rest] = hash.slice(2).split('/');
+        const extra = pickup === undefined ? undefined : unpackText(pickup);
+        if (rest.length || (extra && extra.length !== 18)) throw new Error();
+        return { ...decodeCompact(unpackText(offer), 'offer'), protocol: 2, pickup: extra };
+      }
       if (!hash.startsWith(offerPrefix)) throw new Error();
       token = hash.slice(offerPrefix.length);
     }
@@ -121,7 +128,9 @@ export async function readSignal(text) {
   }
 }
 
-export function drawCode(canvas, text) {
+// level: the error correction to try first. 'L' gives the coarsest grid,
+// which a webcam reads best from a phone screen.
+export function drawCode(canvas, text, { level: first = 'M' } = {}) {
   const compactOffset = text.includes('#2') ? text.indexOf('#2') + 1 : 0;
   const compact = (compactOffset > 0 || text.startsWith('P2:'));
   function make(level, version = 0) {
@@ -132,14 +141,14 @@ export function drawCode(canvas, text) {
     return qr;
   }
   let qr;
-  try { qr = make('M'); }
+  try { qr = make(first); }
   catch {
     try { qr = make('L'); }
     catch { throw new Error('This pairing code is too large for a QR. Use the text pairing option.'); }
   }
   // Additional correction is free when it fits the same grid.
   const version = (qr.getModuleCount() - 17) / 4;
-  for (const level of ['H', 'Q']) {
+  for (const level of ['H', 'Q', 'M']) {
     try { qr = make(level, version); break; }
     catch { /* This level would require smaller squares at the same display size. */ }
   }
