@@ -122,14 +122,21 @@ async function openChild(booth, reference, destination) {
   return child;
 }
 
-async function opticallyReadJoin(page) {
-  await page.locator('#light-send-panel').waitFor({ timeout: 60000 });
-  const link = await page.evaluate(async () => {
+async function opticallyReadJoin(page, selector = '#light-join') {
+  const screenshot = await page.locator(selector).screenshot({timeout:60000});
+  const link = await page.evaluate(async png => {
     const { decodeQR } = await import('./vendor/qr-codecs.js');
-    const canvas = document.getElementById('light-join');
-    const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+    const image = new Image();
+    image.src = 'data:image/png;base64,' + png;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(image, 0, 0);
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
     return decodeQR(data.data, data.width, data.height)?.data;
-  });
+  }, screenshot.toString('base64'));
   const target = new URL(link);
   assert.equal(target.origin + target.pathname, url);
   assert.match(target.hash, /^#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
@@ -187,7 +194,14 @@ try {
   assert.notEqual(source.hash, otherSource.hash);
   const captureCalls = await Promise.all([main, other].map(page => page.evaluate(() => window.qa.cameraCalls)));
   await Promise.all([main, other].map(page => page.locator('#start-button').click()));
-  const [join, otherJoin] = await Promise.all([main, other].map(opticallyReadJoin));
+  const [join, otherJoin] = await Promise.all([main, other].map(page => opticallyReadJoin(page)));
+  await main.evaluate(() => {
+    const stream = document.getElementById('light-stream');
+    window.qa.streamPauses = 0;
+    new MutationObserver(() => {
+      if (stream.hidden) window.qa.streamPauses++;
+    }).observe(stream, {attributes:true, attributeFilter:['hidden']});
+  });
   assert.equal(await main.locator('#light-mode').inputValue(), 'fast');
   assert.equal(await main.locator('#light-options').evaluate(el => el.open), false);
   if (args.has('--color') || args.has('--mono')) {
@@ -198,7 +212,9 @@ try {
   console.log('Two kiosk pages produced distinct short pickup QRs on the default route.');
 
   const phone = await openChild(main, 'firstPhone', join);
-  const otherPhone = await openChild(main, 'otherPhone', otherJoin);
+  const lateJoin = await opticallyReadJoin(other, '#late-join canvas');
+  assert.equal(lateJoin, otherJoin);
+  const otherPhone = await openChild(main, 'otherPhone', lateJoin);
   for (const page of [phone, otherPhone]) await page.locator('#light-receive-panel').waitFor();
   // Both phones initially see exactly the same active kiosk's moving frames.
   await waitForPhoto(otherPhone, 'Cross-kiosk control', 120000);
@@ -221,6 +237,7 @@ try {
   }
   await waitForPhoto(phone, 'Photo pickup', fixtureBytes > 1000000 ? 3600000 : 120000);
   assert.equal(await phone.evaluate(() => window.qa.cameraCalls), cameraStarted);
+  assert.equal(await main.evaluate(() => window.qa.streamPauses), 0, 'The opening QR interrupted the running stream');
   assert.deepEqual(await phone.evaluate(savedPhoto), source);
   if (fixtureBytes >= 2_000_000) assert.match(await phone.locator('#done-description').textContent(), /Received in [\d.]+ s \(\d+ KB\/s\)/);
   if (args.has('--color') || args.has('--fast')) {

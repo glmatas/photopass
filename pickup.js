@@ -60,25 +60,16 @@ export async function readyTone(packet, signal, onReady, { onMessage, cameraGrou
 
 export function startPickupDisplay(transfer, packet, render, { file, cameraGroup }) {
   const life = new AbortController();
-  let timer, direct;
-  function waitForPhone(ms) {
-    if (life.signal.aborted) return;
-    clearTimeout(timer);
-    transfer.pause();
-    render(false);
-    timer = setTimeout(() => stream(false), ms);
-  }
+  let direct;
   function stream(confirmed) {
     if (life.signal.aborted) return;
     clearTimeout(timer);
     transfer.start();
     if (life.signal.aborted) return;
     render(true, confirmed);
-    // A muted phone can join on the timed stream. Showing its URL again at
-    // the same spot lets a later arrival scan without an operator reset.
-    timer = setTimeout(() => waitForPhone(2400), confirmed ? 18000 : 9000);
   }
-  waitForPhone(5000);
+  render(false);
+  const timer = setTimeout(() => stream(false), 5000);
   void readyTone(packet, life.signal, () => {
     stream(true);
     direct ??= import('./pickup-direct.js?v=10').then(({offerPickup}) =>

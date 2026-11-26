@@ -666,6 +666,9 @@ progress::-moz-progress-bar { border-radius: 8px; background: var(--green); }
 
 .pickup-copy h1 { font-size: clamp(42px, 5.4vw, 78px); line-height: 1.02; }
 .pickup-copy .intro { margin-top: 16px; max-width: 30ch; }
+#late-join { margin-top: 16px; width: fit-content; max-width: 100%; }
+#late-join canvas { display: block; width: min(100%, 205px); height: auto; image-rendering: pixelated; forced-color-adjust: none; }
+#late-join figcaption { margin-top: 4px; font-size: 14px; }
 #light-options { margin: 24px 0 12px; }
 #light-options summary { width: fit-content; padding: 10px 0; cursor: pointer; color: var(--green); }
 #light-options label, #light-options select, #light-options .reset-button { display: block; margin: 8px 0 0; }
@@ -694,7 +697,8 @@ progress::-moz-progress-bar { border-radius: 8px; background: var(--green); }
   .light-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .pickup-copy { display: contents; }
   .pickup-copy .intro { margin: 0; max-width: 48ch; }
-  #light-options { order: 1; margin: 0; }
+  #late-join { order: 1; margin: 0; }
+  #light-options { order: 2; margin: 0; }
 }
 @media (orientation: landscape) and (max-height: 540px) {
   .light-expanded .pickup-target { width: min(calc(100% - 145px), calc(var(--screen-height) - 12px)); }

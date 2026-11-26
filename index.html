@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f7f2">
   <title>PhotoPass · Direct photo transfer</title>
-  <link rel="stylesheet" href="./style.css?v=10">
-  <script type="module" src="./app.js?v=10"></script>
+  <link rel="stylesheet" href="./style.css?v=11">
+  <script type="module" src="./app.js?v=11"></script>
 </head>
 <body>
   <header class="masthead">
@@ -74,7 +74,10 @@
       <div class="light-layout">
         <div class="pickup-copy">
           <h1 id="light-send-title">Get your photo</h1>
-          <p class="intro">Scan the code, open the link, and allow camera access. Keep your phone pointed here until your photo appears.</p>
+          <p class="intro">Scan the pickup code, open the link, and allow camera access. Keep the moving square in view until your photo appears.</p>
+          <figure id="late-join" hidden>
+            <figcaption>Scan to open the pickup link</figcaption>
+          </figure>
           <details id="light-options">
             <summary>Kiosk options</summary>
             <label for="light-mode">Transfer speed</label>

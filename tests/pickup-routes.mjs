@@ -80,7 +80,8 @@ try {
           }
           const d = window.opener.document,
             join = d.getElementById('light-join');
-          context.drawImage(join.hidden ? d.getElementById('light-stream') : join, 0, 0, 640, 640);
+          const streamCanvas = d.getElementById('light-stream');
+          context.drawImage(streamCanvas.hidden ? join : streamCanvas, 0, 0, 640, 640);
         }, 33);
         return stream;
       },
@@ -192,7 +193,7 @@ try {
     const frame = ctx.getImageData(0, 0, c.width, c.height);
     return decodeQR(frame.data, c.width, c.height).data;
   }, qrImage);
-  assert.match(link, /\?10#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
+  assert.match(link, /\?11#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
   const before = await kiosk.locator('.pickup-target').boundingBox();
   // Exercise an actual packet with incorrect session bytes on the same PCM bus.
   const wrong = await kiosk.evaluate(async (link) => {

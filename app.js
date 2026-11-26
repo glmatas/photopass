@@ -1,7 +1,7 @@
 import { PhotoPeer } from './peer.js?v=10';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js?v=10';
+import {pickupPacket, readyTone, startPickupDisplay} from './pickup.js?v=11';
 import {receivePickup} from './pickup-direct.js?v=10';
 
 const el = id => document.getElementById(id);
@@ -401,7 +401,7 @@ async function beginLight() {
     lightSender = transfer;
     const url = new URL(receiverPage || location.href);
     const nonce = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(6)))).replaceAll('+','-').replaceAll('/','_');
-    url.search = '?10';
+    url.search = '?11';
     url.hash = lightHash(transfer.id) + '.' + nonce;
     drawCode(el('light-join'), url.href);
     const size = picked.size < 1000000 ? Math.ceil(picked.size / 1000) + ' KB'
@@ -415,7 +415,10 @@ async function beginLight() {
     show('light-send');
     stopPickupDisplay = startPickupDisplay(transfer, pickupPacket(transfer.id, nonce), (streaming, confirmed) => {
       el('light-send-panel').dataset.pickupState = streaming ? (confirmed ? 'ready' : 'broadcast') : 'join';
-      el('light-join').hidden = streaming;
+      const join = el('light-join');
+      const slot = streaming ? el('late-join') : el('light-stream').parentElement;
+      if (join.parentElement !== slot) slot.prepend(join);
+      el('late-join').hidden = !streaming;
       el('light-stream').hidden = !streaming;
       el('pickup-state').textContent = streaming ? 'Keep your camera here' : 'Scan to open';
     }, {file:picked, cameraGroup:selectedCameraGroup});
@@ -830,7 +833,7 @@ function enterRoute() {
   if (location.hash === '#listen' || (!location.hash && new URLSearchParams(location.search).has('listen'))) return openSoundListener();
   if (location.hash.startsWith('#L')) return openLight();
   if (location.hash) return openOffer(location.href);
-  if (['?2', '?3', '?7', '?8', '?9', '?10'].includes(location.search)) {
+  if (['?2', '?3', '?7', '?8', '?9', '?10', '?11'].includes(location.search)) {
     role = 'phone';
     return fail('Scan the full pickup code on the kiosk again.', 'Incomplete pickup link');
   }
