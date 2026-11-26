@@ -11,6 +11,7 @@ const dropRTC = process.argv.includes('--drop-rtc');
 const loseAnswer = process.argv.includes('--lose-answer');
 const brio = process.argv.includes('--brio');
 const retryTone = process.argv.includes('--retry-tone');
+const silentPhone = retryTone || process.argv.includes('--silent-iphone');
 const direct = !process.argv.includes('--no-rtc');
 const breakRTC = process.argv.includes('--break-rtc');
 const root = path.resolve(import.meta.dirname, '..');
@@ -88,17 +89,49 @@ try {
       },
     });
   }
-  function installFailures({ breakRTC, dropRTC, brio, loseAnswer, retryTone }) {
+  function installFailures({ breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone }) {
     if (!navigator.mediaDevices) return;
-    if (retryTone) {
+    if (silentPhone) {
       Object.defineProperty(navigator, 'audioSession', {value: { type:'auto' }, configurable:true});
+      window.toneClicks = 0;
+      window.playedBursts = [];
+      const start = AudioBufferSourceNode.prototype.start;
+      AudioBufferSourceNode.prototype.start = function (...args) {
+        if (window.simulateSilent && this.buffer) {
+          const samples = this.buffer.getChannelData(0);
+          const from = Math.round(this.buffer.sampleRate * 0.012);
+          const to = Math.round(this.buffer.sampleRate * 0.024);
+          const hasCue = samples.subarray(from, to).some(value => Math.abs(value) > 0.20);
+          const route = navigator.audioSession.type;
+          window.playedBursts.push({hasCue, route});
+          if (route !== 'playback') samples.fill(0);
+        }
+        return start.apply(this, args);
+      };
+    }
+    if (retryTone) {
+      // Model a browser that permits each context to start only from a tap.
+      window.AudioContext = new Proxy(window.AudioContext, {
+        construct(target, args) {
+          const ctx = new target(...args);
+          if (!window.simulateSilent) return ctx;
+          const resume = ctx.resume.bind(ctx);
+          let unlocked = false, allow;
+          const gesture = new Promise(resolve => { allow = resolve; });
+          ctx.resume = () => {
+            if (window.inToneTap) { unlocked = true; allow(); }
+            return unlocked ? resume() : gesture.then(resume);
+          };
+          return ctx;
+        },
+      });
       const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       Object.defineProperty(navigator.mediaDevices, 'getUserMedia', {configurable:true, value:c => {
         if (c.audio && !location.hash && !window.allowKioskMic) return Promise.reject(new DOMException('Test denied mic', 'NotAllowedError'));
         return original(c);
       }});
     }
-    if (loseAnswer || retryTone) {
+    if (loseAnswer) {
       window.Worker = new Proxy(window.Worker, {
         construct(WorkerType, args) {
           const worker = new WorkerType(...args);
@@ -106,17 +139,13 @@ try {
           const post = worker.postMessage.bind(worker);
           const muted = new Set();
           worker.postMessage = (msg, ...rest) => {
-              if (msg.kind === 'encode') {
-                if (loseAnswer && msg.bytes.length > 22 && msg.bytes[22] === 65) muted.add(msg.id);
-                if (retryTone && window.simulateSilent && navigator.audioSession.type !== 'playback') muted.add(msg.id);
-              }
+            if (msg.kind === 'encode' && msg.bytes.length > 22 && msg.bytes[22] === 65) muted.add(msg.id);
             return post(msg, ...rest);
           };
           worker.addEventListener('message', ({ data }) => {
             if (data.kind === 'wave' && muted.delete(data.id)) {
               data.pcm.fill(0);
               window.testAnswerLost = true;
-                window.mutedBursts = (window.mutedBursts || 0) + 1;
             }
           });
           return worker;
@@ -176,7 +205,7 @@ try {
   const setup = [
     [installDigitalAudio, { direct }],
     [installCamera, {}],
-    [installFailures, { breakRTC, dropRTC, brio, loseAnswer, retryTone }],
+    [installFailures, { breakRTC, dropRTC, brio, loseAnswer, retryTone, silentPhone }],
   ];
   await ctx.addInitScript({
     content: setup
@@ -206,7 +235,7 @@ try {
     const frame = ctx.getImageData(0, 0, c.width, c.height);
     return decodeQR(frame.data, c.width, c.height).data;
   }, qrImage);
-  assert.match(link, /\?12#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
+  assert.match(link, /\?13#L[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{8}$/);
   const before = await kiosk.locator('.pickup-target').boundingBox();
   // Exercise an actual packet with incorrect session bytes on the same PCM bus.
   const wrong = await kiosk.evaluate(async (link) => {
@@ -263,15 +292,23 @@ try {
   assert(await kiosk.evaluate(() => window.qaBus.outputs.phone > 0));
   assert.notEqual(await kiosk.locator('#light-send-panel').getAttribute('data-pickup-state'), 'ready');
   const started = Date.now();
-  await phone.evaluate(retry => {
+  await phone.evaluate(silent => {
     window.testLife.abort();
-    window.simulateSilent = retry;
+    window.simulateSilent = silent;
+    if (silent) {
+      document.addEventListener('click', event => {
+        if (!event.isTrusted || event.target.id !== 'phone-tone') return;
+        window.toneClicks++;
+        window.inToneTap = true;
+        setTimeout(() => { window.inToneTap = false; }, 0);
+      }, true);
+    }
     window.grant();
-  }, retryTone);
+  }, silentPhone);
   if (retryTone) {
-    await phone.locator('#phone-tone').waitFor();
-    assert((await phone.evaluate(() => window.mutedBursts)) >= 2);
-    assert.equal(await kiosk.locator('#light-send-panel').getAttribute('data-pickup-state'), 'broadcast');
+    await phone.locator('#phone-tone').waitFor({timeout:4000});
+    assert.match(await phone.locator('#phone-pair-status').innerText(), /Sound hasn’t started/);
+    assert.equal(await phone.evaluate(() => window.playedBursts.length), 0);
     assert.match(await kiosk.locator('#pickup-pair-status').innerText(), /Listening for/);
     await phone.locator('#phone-tone').click();
   }
@@ -279,7 +316,13 @@ try {
     () => document.getElementById('light-send-panel').dataset.pickupState === 'ready',
     null,
     { timeout: 14000 },
-  );
+  ).catch(async error => {
+    console.error('Pairing did not start', await kiosk.locator('#pickup-pair-status').innerText(),
+      await phone.locator('#phone-pair-status').textContent(),
+      await phone.evaluate(() => ({clicks:window.toneClicks, bursts:window.playedBursts,
+        contexts:window.qaAudio.contexts.map(c => c.state)})), faults);
+    throw error;
+  });
   const after = await kiosk.locator('.pickup-target').boundingBox();
   assert.deepEqual(after, before);
   await phone.locator('#save-link').waitFor({ timeout: 100000 });
@@ -287,7 +330,14 @@ try {
   const bytes = await phone.evaluate(() => window.qaAudio.received);
   const statuses = await kiosk.evaluate(() => window.statusLog);
   assert(statuses.some(message => message.startsWith('Phone tone received.')));
-  if (retryTone) assert.equal(await phone.evaluate(() => navigator.audioSession.type), 'auto');
+  if (silentPhone) {
+    assert.equal(await phone.evaluate(() => navigator.audioSession.type), 'auto');
+    assert.equal(await phone.evaluate(() => window.toneClicks), retryTone ? 1 : 0);
+    const bursts = await phone.evaluate(() => window.playedBursts);
+    assert(bursts.length && bursts[0].hasCue, 'The ready packet must start with the audible chirp.');
+    assert(bursts.every(b => b.route === 'playback'), 'Silent mode must allow every pairing packet.');
+    if (direct && !loseAnswer) assert(bursts.some(b => !b.hasCue), 'The connection reply should follow on the same media route.');
+  }
   if (direct && !breakRTC && !dropRTC && !loseAnswer) {
     assert(bytes >= original.size, 'Direct channel should deliver the original.');
     assert(statuses.includes('Phone reply received. Connecting directly…'));
@@ -333,7 +383,7 @@ try {
     brio,
     'camera grant to display:',
     seconds,
-    's. Manual tone retry:', retryTone, 'No phone microphone. Resources released.',
+    's. Simulated silent mode:', silentPhone, 'Manual tone retry:', retryTone, 'No phone microphone. Resources released.',
   );
 } finally {
   await browser.close();

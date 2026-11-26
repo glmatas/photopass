@@ -149,7 +149,7 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
     }, { once: true });
   }
 
-  async function transmit(bytes) {
+  async function transmit(bytes, pairingChirp) {
     if (closed) throw aborted();
     if (context.state !== 'running') throw new Error('Sound playback paused. Tap to start sound again.');
     const id = ++ticket;
@@ -158,8 +158,20 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
       worker.postMessage({kind:'encode', id, bytes}, [bytes.buffer]);
     });
     if (closed) throw aborted();
-    const audio = context.createBuffer(1, pcm.length, context.sampleRate);
-    audio.copyToChannel(pcm, 0);
+    const rate = context.sampleRate;
+    const cueSamples = pairingChirp ? Math.round(0.14 * rate) : 0;
+    const prefix = pairingChirp ? cueSamples + Math.round(0.015 * rate) : 0;
+    const audio = context.createBuffer(1, prefix + pcm.length, rate);
+    if (pairingChirp) {
+      // An audible 900–1500 Hz sweep identifies the ready signal on small speakers.
+      const samples = audio.getChannelData(0);
+      for (let i = 0; i < cueSamples; i++) {
+        const t = i / rate;
+        const fade = Math.min(1, i / (0.01 * rate), (cueSamples - 1 - i) / (0.01 * rate));
+        samples[i] = 0.22 * fade * Math.sin(2 * Math.PI * t * (900 + 300 * i / cueSamples));
+      }
+    }
+    audio.copyToChannel(pcm, 0, prefix);
     const speaker = context.createBufferSource();
     speaker.buffer = audio;
     speaker.connect(context.destination);
@@ -184,13 +196,13 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
     });
   }
 
-  function send(bytes) {
+  function send(bytes, {pairingChirp = false} = {}) {
     if (closed) return Promise.reject(aborted());
     if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > maxPacketSize) {
       return Promise.reject(new Error('Sound packets must contain 1–1,200 bytes.'));
     }
     const copy = bytes.slice();
-    const sent = sendQueue.then(() => transmit(copy));
+    const sent = sendQueue.then(() => transmit(copy, pairingChirp));
     sendQueue = sent.catch(() => {});
     return sent;
   }

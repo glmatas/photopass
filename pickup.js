@@ -6,45 +6,35 @@ export function pickupPacket(id, nonce) {
   return Uint8Array.of(80, 80, 82, 1, ...fileId, ...session);
 }
 
-export async function readyTone(packet, signal, onReady, { onMessage, cameraGroup, onListening, onUnavailable, playback = false } = {}) {
+export async function readyTone(packet, signal, onReady, {
+  onMessage, cameraGroup, onListening, onUnavailable, outputContext, pairingChirp, onWaitingForTap, onPlayed,
+} = {}) {
   if (signal.aborted) return;
   const Context = window.AudioContext || window.webkitAudioContext;
   if (!Context) { onUnavailable?.(); return; }
   const life = new AbortController();
-  let context, modem, timeout, retry, previousType;
-  let audioSession;
+  let context, modem, timeout, retry, resumeTimer, awaitingOutput = false;
   const unlock = () => { if (context?.state === 'suspended') context.resume().catch(() => {}); };
   function close() {
     clearTimeout(timeout);
     clearTimeout(retry);
+    clearTimeout(resumeTimer);
     signal.removeEventListener('abort', close);
     document.removeEventListener('click', unlock);
     document.removeEventListener('keydown', unlock);
     if (life.signal.aborted) return;
     life.abort();
-    if (context && context.state !== 'closed') context.close().catch(() => {});
-    try {
-      if (previousType && audioSession.type === 'playback') audioSession.type = previousType;
-    } catch { /* A browser may withdraw access to its audio session. */ }
+    if (context && !outputContext && context.state !== 'closed') context.close().catch(() => {});
   }
-  function unavailable() {
+  function unavailable(error) {
     if (signal.aborted || life.signal.aborted) return;
     close();
-    onUnavailable?.();
+    if (onWaitingForTap && (error?.name === 'NotAllowedError' || (awaitingOutput && !error))) onWaitingForTap();
+    else onUnavailable?.();
   }
   signal.addEventListener('abort', close, {once:true});
   try {
-    // Only an explicit phone tap opts into the iOS media playback route.
-    if (playback) {
-      try {
-        audioSession = navigator.audioSession;
-        if (audioSession?.type && audioSession.type !== 'playback') {
-          previousType = audioSession.type;
-          audioSession.type = 'playback';
-        }
-      } catch { /* Standard Web Audio still works when this API is restricted. */ }
-    }
-    context = new Context();
+    context = outputContext || new Context();
     timeout = setTimeout(unavailable, onReady ? 45000 : 7500);
     document.addEventListener('click', unlock);
     document.addEventListener('keydown', unlock);
@@ -54,10 +44,14 @@ export async function readyTone(packet, signal, onReady, { onMessage, cameraGrou
     // A muted/blocked return path need not load a codec alongside QR decoding.
     // On the kiosk, opening the microphone can itself make playback eligible.
     if (!onReady) {
+      awaitingOutput = true;
+      if (onWaitingForTap) resumeTimer = setTimeout(onWaitingForTap, 900);
       await resumed;
+      awaitingOutput = false;
+      clearTimeout(resumeTimer);
       if (life.signal.aborted) return;
     }
-    const {openSoundModem} = await import('./sound-modem.js?v=12');
+    const {openSoundModem} = await import('./sound-modem.js?v=13');
     if (life.signal.aborted) return;
     modem = await openSoundModem({
       context, listen:Boolean(onReady), signal:life.signal, onError:unavailable, cameraGroup, micTimeoutMs:40000,
@@ -71,15 +65,17 @@ export async function readyTone(packet, signal, onReady, { onMessage, cameraGrou
     await resumed;
     if (life.signal.aborted) return;
     if (onReady) { clearTimeout(timeout); onListening?.(modem.inputLabel); return; }
-    await modem.send(packet);
+    await modem.send(packet, {pairingChirp});
     if (life.signal.aborted) return;
-    retry = setTimeout(() => { modem.send(packet).catch(() => {}).finally(close); }, 1000);
-  } catch { unavailable(); }
+    onPlayed?.();
+    retry = setTimeout(() => { modem.send(packet, {pairingChirp}).catch(() => {}).finally(close); }, 1000);
+  } catch (error) { unavailable(error); }
 }
 
 export function phonePairing(ready, signal, status, retry) {
-  const canPair = Boolean(globalThis.RTCPeerConnection && (window.AudioContext || window.webkitAudioContext));
-  let packet = ready, tone, timer, useMediaVolume = false;
+  const Context = window.AudioContext || window.webkitAudioContext;
+  const canPair = Boolean(globalThis.RTCPeerConnection && Context);
+  let packet = ready, tone, timer, idle, speaker, previousType;
   function show(message, canRetry = false) {
     status.textContent = message;
     status.hidden = !canPair || !message;
@@ -89,25 +85,56 @@ export function phonePairing(ready, signal, status, retry) {
     clearTimeout(timer);
     tone?.abort();
   }
+  function releaseSpeaker() {
+    clearTimeout(idle);
+    cancelBurst();
+    if (speaker && speaker.state !== 'closed') speaker.close().catch(() => {});
+    speaker = undefined;
+    try {
+      if (previousType && navigator.audioSession.type === 'playback') navigator.audioSession.type = previousType;
+    } catch { /* The browser may withdraw access to its audio session. */ }
+    previousType = undefined;
+  }
   function offerRetry() {
     if (!signal.aborted) show('Keep scanning. To retry direct pairing, use the phone speaker with media volume up.', true);
   }
   function play(bytes) {
-    if (signal.aborted || !bytes) return;
+    if (signal.aborted || !bytes || !Context) return;
     cancelBurst();
     packet = bytes;
     tone = new AbortController();
+    // Select media volume before the first resume, including on a fresh QR visit.
+    // Reuse an unlocked context for the answer when the browser required a tap.
+    if (!speaker) {
+      try {
+        const session = navigator.audioSession;
+        if (session?.type && session.type !== 'playback') {
+          previousType = session.type;
+          session.type = 'playback';
+        }
+      } catch { /* Audio Session is optional. */ }
+      try { speaker = new Context(); }
+      catch { releaseSpeaker(); offerRetry(); return; }
+    }
+    clearTimeout(idle);
+    idle = setTimeout(releaseSpeaker, 30000);
     show(bytes === ready ? 'Trying direct pairing…' : 'Sending the pairing reply…');
-    if (canPair) timer = setTimeout(offerRetry, 5000);
-    void readyTone(bytes, tone.signal, undefined, {playback:useMediaVolume, onUnavailable:offerRetry});
+    void readyTone(bytes, tone.signal, undefined, {
+      outputContext:speaker, pairingChirp:bytes === ready,
+      onWaitingForTap:() => show('Sound hasn’t started. Tap Play pairing tone, or keep scanning.', true),
+      onPlayed() {
+        show(bytes === ready ? 'Pairing tone played. Waiting for the kiosk…' : 'Pairing reply played. Connecting…');
+        timer = setTimeout(offerRetry, 5000);
+      },
+      onUnavailable:offerRetry,
+    });
   }
   function retryFromTap() {
-    useMediaVolume = true;
     play(packet);
   }
   retry.addEventListener('click', retryFromTap);
   signal.addEventListener('abort', () => {
-    cancelBurst();
+    releaseSpeaker();
     retry.removeEventListener('click', retryFromTap);
     show('');
   }, {once:true});
@@ -120,7 +147,7 @@ export function phonePairing(ready, signal, status, retry) {
       show('Kiosk pairing offer received. Preparing the reply…');
     },
     direct(active) {
-      cancelBurst();
+      releaseSpeaker();
       packet = ready;
       if (active) show('');
       else offerRetry();
