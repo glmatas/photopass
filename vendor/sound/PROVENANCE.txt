@@ -25,7 +25,8 @@ The pinned release's older README also discusses dynamically loading Phil
 Karn's LGPL libfec.js. PhotoPass does not distribute or load that library.
 
 PhotoPass supplies modem-worker.js, capture-worklet.js and sound-modem.js.
-They select audible-7k-channel-0 at 9,200 Hz with CRC-32, rate-1/2
+Pairing tones (pickup.js) use the hello-world GMSK profile at 30 samples per
+symbol with frames up to 600 bytes. Otherwise they select audible-7k-channel-0 at 9,200 Hz with CRC-32, rate-1/2
 constraint-length-9 convolutional coding and outer Reed–Solomon coding, raise
 the permitted binary packet size to 1,200 bytes, normalize speaker output and
 precede each burst with a tapered 40 ms tone to wake the audio route.

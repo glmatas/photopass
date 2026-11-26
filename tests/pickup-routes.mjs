@@ -363,6 +363,7 @@ try {
     );
   if (brio) assert.deepEqual(await kiosk.evaluate(() => window.requestedInputs), (retryTone || systemDenied) ? ['desk', 'desk', 'webcam'] : ['desk', 'webcam']);
   if (loseAnswer) assert((await phone.evaluate(() => window.testAnswerLost)) && bytes === 0);
+  assert.equal(await kiosk.evaluate(() => window.qaBus.late), 0, 'Test audio must reach the kiosk without gaps.');
   assert.deepEqual(await phone.evaluate(savedPhoto), original);
   assert.equal(await phone.evaluate(() => window.camCalls), 1);
   assert(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));

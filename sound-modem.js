@@ -1,4 +1,8 @@
-const maxPacketSize = 1200;
+const maxPacketLimit = 1200;
+// Pairing packets (ready ~22 B, answer ~210-600 B) are short and must survive a real speaker-to-microphone
+// path. Measured on a laptop speaker to a Logitech BRIO: GMSK at ~4.4 kHz, 30 samples per symbol decoded far
+// more reliably than the default OFDM profile. frame_length 600 is the longest verified digitally (800 and 1200 exceed the worker's 15 s packet cap).
+export const pairingProfile = {base: 'hello-world', frame_length: 600, interpolation: {samples_per_symbol: 30}};
 const worklets = new WeakMap();
 const aborted = () => new DOMException('Sound transfer stopped.', 'AbortError');
 
@@ -12,14 +16,14 @@ function loadWorklet(context) {
 
 // The caller owns and resumes the AudioContext inside a tap. Each modem owns
 // its worker, capture tracks, and scheduled speaker source.
-export async function openSoundModem({ context, listen = false, onPacket, onError, signal, micTimeoutMs = 8000, cameraGroup }) {
+export async function openSoundModem({ context, listen = false, onPacket, onError, signal, micTimeoutMs = 8000, cameraGroup, profile, txGain, outputNode }) {
   if (signal?.aborted) throw aborted();
   if (!context || context.state === 'closed') throw new Error('Sound playback is unavailable.');
   const worker = new Worker(new URL('./vendor/sound/modem-worker.js', import.meta.url));
   const life = new AbortController();
   let stream, input, capture, mute;
   let closed = false, opened = false, listening = false, listenError;
-  let queued = 0, ticket = 0;
+  let queued = 0, ticket = 0, maxPacketSize = maxPacketLimit;
   let readyResolve, readyReject, playbackCancel;
   const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   const encoding = new Map();
@@ -56,7 +60,10 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
   worker.onerror = event => failed(new Error(event.message || 'The local sound modem stopped.'));
   worker.onmessage = ({data}) => {
     if (closed) return;
-    if (data.kind === 'ready') { clearTimeout(timer); readyResolve(); }
+    if (data.kind === 'ready') {
+      if (data.frameLength) maxPacketSize = Math.min(maxPacketLimit, data.frameLength);
+      clearTimeout(timer); readyResolve();
+    }
     if (data.kind === 'consumed') queued = Math.max(0, queued - 1);
     if (data.kind === 'packet') onPacket?.(data.bytes);
     if (data.kind === 'wave' || data.kind === 'error') {
@@ -174,7 +181,7 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
     audio.copyToChannel(pcm, 0, prefix);
     const speaker = context.createBufferSource();
     speaker.buffer = audio;
-    speaker.connect(context.destination);
+    speaker.connect(outputNode || context.destination);
     await new Promise((resolve, reject) => {
       let tail, timer;
       function finish(error) {
@@ -199,7 +206,7 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
   function send(bytes, {pairingChirp = false} = {}) {
     if (closed) return Promise.reject(aborted());
     if (!(bytes instanceof Uint8Array) || !bytes.length || bytes.length > maxPacketSize) {
-      return Promise.reject(new Error('Sound packets must contain 1–1,200 bytes.'));
+      return Promise.reject(new Error('Sound packets must contain 1–' + maxPacketSize.toLocaleString('en-US') + ' bytes.'));
     }
     const copy = bytes.slice();
     const sent = sendQueue.then(() => transmit(copy, pairingChirp));
@@ -208,13 +215,13 @@ export async function openSoundModem({ context, listen = false, onPacket, onErro
   }
   const timer = setTimeout(() => failed(new Error('The local sound modem did not load.')), 20000);
   try {
-    worker.postMessage({kind:'init', rate:context.sampleRate, listen:Boolean(listen)});
+    worker.postMessage({kind:'init', rate:context.sampleRate, listen:Boolean(listen), profile, txGain});
     await Promise.all([ready, requestInput()]);
     try { await connectInput(); }
     catch (error) { listenError = error; releaseInput(); }
     if (closed) throw aborted();
     opened = true;
-    return {send, close, maxPacketSize, get listening() {return listening;}, get listenError() {return listenError;},
+    return {send, close, get maxPacketSize() {return maxPacketSize;}, get listening() {return listening;}, get listenError() {return listenError;},
       get inputLabel() {return stream?.getAudioTracks()[0]?.label;}};
   } catch (error) {
     close();
