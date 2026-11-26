@@ -449,15 +449,15 @@ try {
       const token = pickupPacket(idHex, nonce);
       let bytes = token, detail = {};
       if (kind === 'answer') {
-        const [{ PhotoPeer }, { encodeCompact }] = await Promise.all([import('./peer.js'), import('./signal-codec.js')]);
+        const [{ PhotoPeer }, { encodeCompact }, { trimAnswer }] = await Promise.all([import('./peer.js'), import('./signal-codec.js'), import('./pickup-direct.js')]);
         const c = document.createElement('canvas'); c.width = 64; c.height = 48; c.getContext('2d').fillRect(0, 0, 40, 30);
         const file = new File([await new Promise(r => c.toBlob(r, 'image/jpeg'))], 'qa.jpg', { type: 'image/jpeg' });
         const a = new PhotoPeer({}), b = new PhotoPeer({});
         const offer = await a.offer(file, { quickGather: true });
         const answer = await b.answer(offer, { quickGather: true });
-        const round = Array.from(crypto.getRandomValues(new Uint32Array(2)), n => n.toString(16).padStart(8, '0')).join('');
-        const payload = encodeCompact(answer, round);
-        bytes = Uint8Array.of(...token, 65, ...payload); // exactly pickup-direct.js message()
+        const round = crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, '0');
+        const payload = encodeCompact({ type: 'answer', sdp: trimAnswer(answer.sdp) }, round);
+        bytes = Uint8Array.of(97, ...token.slice(-6), ...payload); // exactly pickup-direct.js answerMessage()
         detail = { sdpLength: answer.sdp.length, compactBytes: payload.length };
         a.close(); b.close();
       }

@@ -144,7 +144,7 @@ try {
           const post = worker.postMessage.bind(worker);
           const muted = new Set();
           worker.postMessage = (msg, ...rest) => {
-            if (msg.kind === 'encode' && msg.bytes.length > 22 && msg.bytes[22] === 65) muted.add(msg.id);
+            if (msg.kind === 'encode' && msg.bytes.length > 7 && msg.bytes[0] === 97) muted.add(msg.id);
             return post(msg, ...rest);
           };
           worker.addEventListener('message', ({ data }) => {
@@ -355,6 +355,11 @@ try {
     assert(
       await kiosk.evaluate(() => window.testNetworkBlocked),
       'The camera must keep working after an actual answer is rejected.',
+    );
+  if (breakRTC)
+    assert(
+      statuses.some((m) => m.startsWith('Phone reply received, but the direct network connection failed.') && /\[ice \w+, dtls /.test(m)),
+      'The kiosk must name the network phase and show its diagnosis code.',
     );
   if (dropRTC)
     assert(

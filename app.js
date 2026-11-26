@@ -1,8 +1,8 @@
-import { PhotoPeer } from './peer.js?v=10';
+import { PhotoPeer } from './peer.js?v=11';
 import { makeSignalURL, makeAnswerText, readSignal, drawCode, startCamera } from './qr.js?v=3';
 import { openCapture, takePhoto } from './camera.js';
-import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=15';
-import {receivePickup} from './pickup-direct.js?v=12';
+import {pickupPacket, phonePairing, startPickupDisplay} from './pickup.js?v=16';
+import {receivePickup} from './pickup-direct.js?v=13';
 
 const el = id => document.getElementById(id);
 const panels = ['start', 'pairing', 'transfer', 'done', 'error', 'light-send', 'light-receive', 'sound-send', 'sound-receive'];
@@ -459,9 +459,9 @@ async function readLight() {
   }
   const onControl = token && receivePickup(token, lightId, signal, pair.play, (blob, name) => {
     finishPickup(blob, name, 'by direct connection');
-  }, fraction => {
+  }, (fraction, reason, code) => {
     if (signal.aborted) return;
-    if (!directProgress || !fraction) pair.direct(fraction > 0);
+    if (!directProgress || !fraction) pair.direct(fraction > 0, reason, code);
     directProgress = fraction;
     if (!fraction && cameraFailure) { cameraError(cameraFailure); return; }
     if (fraction > previousProgress || fraction === 0) {

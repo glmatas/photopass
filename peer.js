@@ -163,11 +163,31 @@ export class PhotoPeer {
     s.pc.close();
   }
 
+  // A short field-diagnosis code: connection states and candidate counts.
+  // Candidate kinds: h4/h6 = raw IPv4/IPv6 host, hm = mDNS host, s = server
+  // reflexive, p = peer reflexive, r = relay; a trailing t marks TCP.
+  describe() {
+    const pc = this.session?.pc;
+    if (!pc) return "";
+    const kinds = sdp => {
+      const counts = {};
+      for (const [, transport, address, type] of (sdp || "").matchAll(/^a=candidate:\S+ \d+ (\S+) \d+ (\S+) \d+ typ (\w+)/gim)) {
+        const kind = (type === "host" ? (address.endsWith(".local") ? "hm" : address.includes(":") ? "h6" : "h4") : type[0]) +
+          (/^tcp$/i.test(transport) ? "t" : "");
+        counts[kind] = (counts[kind] || 0) + 1;
+      }
+      return Object.entries(counts).map(([kind, n]) => kind + "=" + n).join(" ") || "none";
+    };
+    return "ice " + pc.iceConnectionState + ", dtls " + (pc.sctp?.transport?.state ?? "-") +
+      ", local " + kinds(pc.localDescription?.sdp) + ", remote " + kinds(pc.remoteDescription?.sdp);
+  }
+
   _fail(s, message) {
     if (this.session !== s || s.phase === "done") return;
     const phase = s.phase === "pairing" ? "pairing" : "transfer";
+    const detail = this.describe();
     this.close();
-    this.callbacks.onFailure?.(message, phase);
+    this.callbacks.onFailure?.(message, phase, detail);
   }
 
   _deadline(s, ms, message) {

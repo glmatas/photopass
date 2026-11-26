@@ -110,8 +110,17 @@ export function phonePairing(ready, signal, status, retry) {
     } catch { /* The browser may withdraw access to its audio session. */ }
     previousType = undefined;
   }
-  function offerRetry() {
-    if (!signal.aborted) show('Keep scanning. To retry direct pairing, use the phone speaker with media volume up.', true);
+  // Each message names the pairing phase that stopped, for field diagnosis.
+  const stopped = {
+    offer: 'Keep scanning. No pairing offer was read from the kiosk yet.',
+    reply: 'Keep scanning. The kiosk did not connect after the pairing reply.',
+    network: 'Keep scanning. The direct network connection failed.',
+    dropped: 'Keep scanning. The direct connection dropped.',
+    start: 'Keep scanning. This phone could not prepare a direct connection.',
+  };
+  function offerRetry(reason, code = '') {
+    if (signal.aborted) return;
+    show((stopped[reason] || 'Keep scanning.') + ' To retry direct pairing, use the phone speaker with media volume up.' + code, true);
   }
   function play(bytes) {
     if (signal.aborted || !bytes || !Context) return;
@@ -131,6 +140,8 @@ export function phonePairing(ready, signal, status, retry) {
       try { speaker = new Context(); }
       catch { releaseSpeaker(); offerRetry(); return; }
     }
+    // The ready tone repeats for about 7 s; the reply's outcome comes from the connection itself.
+    const isReady = bytes === ready;
     clearTimeout(idle);
     idle = setTimeout(releaseSpeaker, 30000);
     show(bytes === ready ? 'Trying direct pairing…' : 'Sending the pairing reply…');
@@ -138,10 +149,10 @@ export function phonePairing(ready, signal, status, retry) {
       outputContext:speaker, pairingChirp:bytes === ready,
       onWaitingForTap:() => show('Sound hasn’t started. Tap Play pairing tone, or keep scanning.', true),
       onPlayed() {
-        show(bytes === ready ? 'Pairing tone played. Waiting for the kiosk…' : 'Pairing reply played. Connecting…');
-        timer = setTimeout(offerRetry, 5000);
+        show(isReady ? 'Pairing tone played. Waiting for the kiosk…' : 'Pairing reply played. Connecting…');
+        if (isReady) timer = setTimeout(() => offerRetry('offer'), 8000);
       },
-      onUnavailable:offerRetry,
+      onUnavailable:() => offerRetry(),
     });
   }
   function retryFromTap() {
@@ -161,11 +172,11 @@ export function phonePairing(ready, signal, status, retry) {
       packet = undefined;
       show('Kiosk pairing offer received. Preparing the reply…');
     },
-    direct(active) {
+    direct(active, reason, code) {
       releaseSpeaker();
       packet = ready;
       if (active) show('');
-      else offerRetry();
+      else offerRetry(reason, code);
     },
   };
 }
@@ -184,7 +195,7 @@ export function startPickupDisplay(transfer, packet, render, { file, cameraGroup
   const timer = setTimeout(() => stream(false), 5000);
   function heard() {
     stream(true);
-    direct ??= import('./pickup-direct.js?v=12').then(({offerPickup}) =>
+    direct ??= import('./pickup-direct.js?v=13').then(({offerPickup}) =>
       life.signal.aborted ? undefined : offerPickup(file, packet, transfer, life.signal, onPairStatus)).catch(() => {
         if (!life.signal.aborted) onPairStatus('Phone tone received. Using screen transfer.');
       });
